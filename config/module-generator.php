@@ -71,6 +71,11 @@ return [
     |--------------------------------------------------------------------------
     | Donde viven las migraciones/seeders (database/migrations|seeders/tenant).
     | Absoluta o relativa a base_path(). Se puede sobreescribir en el prompt.
+    |
+    | En Docker, define MODULE_GENERATOR_SUITE_PATH en el .env con la ruta donde
+    | Suite está montado dentro del contenedor (ej. /var/www/Suite). Si Suite no
+    | está accesible, en el prompt puedes escribir 'local' para generar la
+    | migración dentro del propio módulo.
     */
-    'suite_default_path' => '../Suite',
+    'suite_default_path' => env('MODULE_GENERATOR_SUITE_PATH', '../Suite'),
 ];

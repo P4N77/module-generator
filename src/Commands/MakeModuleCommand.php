@@ -24,6 +24,9 @@ class MakeModuleCommand extends Command
      */
     protected $description = 'Create a new DDD module with complete folder structure';
 
+    /** Sentinela: generar la migración dentro del módulo en vez de en Suite. */
+    private const LOCAL_TARGET = 'local';
+
     /** Namespace raíz de los módulos (config: module-generator.module_namespace). */
     private string $moduleNs = 'App\\Modules';
 
@@ -86,21 +89,31 @@ class MakeModuleCommand extends Command
 
         $this->info("Creating DDD module: {$moduleNamePlural}");
 
-        // ===== Migración + (opcional) seeder en el repositorio Suite =====
+        // ===== Migración + (opcional) seeder =====
+        // En Suite (si está accesible) o, como respaldo (p.ej. en contenedores
+        // donde Suite no está montado), dentro del propio módulo.
         $suitePath = $this->resolveSuiteBasePath();
         if ($suitePath === null) {
             return Command::FAILURE;
         }
 
-        $migrationProject = $this->chooseProject(
-            "{$suitePath}/database/migrations/tenant",
-            'migraciones'
-        );
-        $this->createMigration($suitePath, $migrationProject, $moduleNamePlural, $tableName);
+        if ($suitePath === self::LOCAL_TARGET) {
+            // Respaldo local: migración dentro del módulo (la carga el provider).
+            $localMigrationsPath = "{$basePath}/Infrastructure/Database/Migrations";
+            File::ensureDirectoryExists($localMigrationsPath);
+            $this->writeMigrationFile($localMigrationsPath, $tableName);
+            $this->line("Created: Infrastructure/Database/Migrations (migración local; muévela a Suite cuando esté disponible)");
+        } else {
+            $migrationProject = $this->chooseProject(
+                "{$suitePath}/database/migrations/tenant",
+                'migraciones'
+            );
+            $this->createMigration($suitePath, $migrationProject, $moduleNamePlural, $tableName);
 
-        if ($this->confirm('¿Desea agregar un seeder para este módulo?', false)) {
-            // El seeder vive en el mismo proyecto que la migración.
-            $this->createSeeder($suitePath, $migrationProject, $moduleNamePlural, $tableName);
+            if ($this->confirm('¿Desea agregar un seeder para este módulo?', false)) {
+                // El seeder vive en el mismo proyecto que la migración.
+                $this->createSeeder($suitePath, $migrationProject, $moduleNamePlural, $tableName);
+            }
         }
 
         // ===== Estructura del módulo =====
@@ -194,24 +207,43 @@ class MakeModuleCommand extends Command
     }
     
     /**
-     * Resuelve y valida la ruta base del repositorio Suite (absoluta o relativa
-     * a Iris). Devuelve la ruta canónica o null si no es válida.
+     * Resuelve la ruta base del repositorio Suite. Reintenta ante rutas
+     * inválidas (útil en Docker donde Suite puede estar montado en otra ruta) y
+     * permite escribir 'local' para generar la migración dentro del módulo.
+     *
+     * @return string Ruta canónica de Suite, self::LOCAL_TARGET (modo local) o
+     *                null para abortar.
      */
     private function resolveSuiteBasePath(): ?string
     {
         $default = (string) config('module-generator.suite_default_path', '../Suite');
-        $input = (string) $this->ask('Ruta de Suite (absoluta o relativa al proyecto)', $default);
 
-        $path = $this->normalizeSuitePath($input);
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            $input = trim((string) $this->ask(
+                "Ruta de Suite (absoluta o relativa al proyecto). Escribe 'local' para generar la migración dentro del módulo",
+                $default
+            ));
 
-        if ($path === null || ! File::isDirectory("{$path}/database/migrations/tenant")) {
+            if (strtolower($input) === self::LOCAL_TARGET) {
+                $this->line('Modo local: la migración se generará dentro del módulo.');
+                return self::LOCAL_TARGET;
+            }
+
+            $path = $this->normalizeSuitePath($input);
+            if ($path !== null && File::isDirectory("{$path}/database/migrations/tenant")) {
+                $this->line("Suite localizado en: {$path}");
+                return $path;
+            }
+
             $this->error("No se encontró 'database/migrations/tenant' en: {$input}");
-            return null;
+            $default = $input; // conservar lo escrito para corregirlo
         }
 
-        $this->line("Suite localizado en: {$path}");
+        $this->warn('No se pudo localizar Suite. Puedes definir MODULE_GENERATOR_SUITE_PATH en el .env.');
 
-        return $path;
+        return $this->confirm('¿Generar la migración localmente dentro del módulo?', true)
+            ? self::LOCAL_TARGET
+            : null;
     }
 
     /**
@@ -297,6 +329,16 @@ class MakeModuleCommand extends Command
         string $tableName
     ): void {
         $dir = "{$suitePath}/database/migrations/tenant/{$project}/{$moduleFolder}";
+        $fileName = $this->writeMigrationFile($dir, $tableName);
+        $this->line("Created: Suite/database/migrations/tenant/{$project}/{$moduleFolder}/{$fileName}");
+    }
+
+    /**
+     * Escribe el archivo de migración en $dir y devuelve el nombre del archivo.
+     * Reutilizado por el flujo Suite y por el respaldo local.
+     */
+    private function writeMigrationFile(string $dir, string $tableName): string
+    {
         File::ensureDirectoryExists($dir);
 
         $timestamp = date('Y_m_d_His');
@@ -338,7 +380,8 @@ return new class extends Migration
 PHP;
 
         File::put("{$dir}/{$fileName}", $content);
-        $this->line("Created: Suite/database/migrations/tenant/{$project}/{$moduleFolder}/{$fileName}");
+
+        return $fileName;
     }
 
     /**

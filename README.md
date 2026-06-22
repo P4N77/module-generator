@@ -69,8 +69,24 @@ php artisan make:module irs/Novelty
 El comando pregunta de forma interactiva:
 
 1. **Ruta de Suite** (absoluta o relativa al proyecto; default configurable).
+   Si la ruta no es válida, **reintenta**; y puedes escribir **`local`** para
+   generar la migración dentro del propio módulo (`Infrastructure/Database/Migrations`,
+   que el provider ya carga) en vez de en Suite.
 2. **Proyecto de migraciones** (lista las carpetas de `migrations/tenant` + opción `otro`).
 3. **¿Agregar seeder?** Si sí, se crea en el mismo proyecto que la migración.
+
+### En Docker
+
+Dentro de un contenedor, `../Suite` normalmente no resuelve. Tienes dos opciones:
+
+- Montar Suite en el contenedor y apuntar la ruta con una variable de entorno
+  en el `.env` del proyecto:
+  ```env
+  MODULE_GENERATOR_SUITE_PATH=/var/www/Suite
+  ```
+  (ajusta a donde esté montado Suite). Así el prompt ya trae esa ruta por defecto.
+- Si Suite no está montado, responde **`local`** en el prompt: la migración se
+  genera dentro del módulo y la mueves a Suite cuando esté disponible.
 
 ## Configuración
 
@@ -90,7 +106,7 @@ php artisan vendor:publish --tag=module-generator-config
 | `connection` | `tenant` | Conexión Eloquent de los modelos (`null` = default). |
 | `route_middleware` | `[web, auth:sanctum, config('jetstream.auth_session'), verified, tenant.selected, tenant]` | Middleware del grupo de rutas. Entradas con `(` o `::` se emiten como expresión PHP. |
 | `pages_path` | `Pages` | Carpeta de páginas Inertia bajo `resources/js`. |
-| `suite_default_path` | `../Suite` | Ruta por defecto del repo Suite en el prompt. |
+| `suite_default_path` | `env('MODULE_GENERATOR_SUITE_PATH', '../Suite')` | Ruta por defecto del repo Suite en el prompt. En Docker, define `MODULE_GENERATOR_SUITE_PATH` en el `.env`. |
 
 ## Dependencias del proyecto consumidor
 
