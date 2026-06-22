@@ -20,23 +20,14 @@ Un solo comando, `php artisan make:module`, genera un módulo CRUD completo:
 
 ## Instalación
 
-El paquete vive en un repo **privado** de GitHub, así que un `composer require`
-"a secas" no lo encuentra (no está en Packagist): hay que declarar el repositorio
-y autenticarse.
-
-### Requisito previo (una vez por persona)
-
-1. Pedir al dueño del repo que te agregue como **colaborador** en
-   `P4N77/module-generator` (*Settings → Collaborators*) y **aceptar la invitación**.
-   Sin esto, Composer/GitHub responde `404 Not Found` aunque pongas token.
-
-### Instalar en un proyecto
+El repo es **público**, así que no necesitas token, SSH ni ser colaborador. Solo
+hay que declarar el repositorio (no está en Packagist) e instalar:
 
 ```bash
-# 1. Declarar el repositorio (sin editar el JSON a mano). "no-api" hace que
-#    Composer clone por git/SSH y no llame a api.github.com.
+# 1. Declarar el repositorio (sin editar el JSON a mano). "no-api" evita la API
+#    de GitHub y clona por HTTPS directo (sin límites de rate ni token).
 composer config repositories.module-generator \
-  '{"type":"vcs","url":"git@github.com:P4N77/module-generator.git","no-api":true}'
+  '{"type":"vcs","url":"https://github.com/P4N77/module-generator.git","no-api":true}'
 
 # 2. Requerir el paquete (es una herramienta de desarrollo => --dev)
 composer require --dev sodeker/module-generator:^1.0
@@ -44,25 +35,13 @@ composer require --dev sodeker/module-generator:^1.0
 
 El `ServiceProvider` se auto-descubre (Laravel package discovery).
 
-### Autenticación
+> En Docker/CI corre estos comandos **dentro** del contenedor (donde está el
+> `composer.json`).
 
-Elige **una** según tu entorno:
-
-- **SSH** (recomendado en local): tener tu llave SSH cargada en GitHub
-  (`ssh -T git@github.com` debe saludarte). Con `"no-api": true` no se necesita token.
-
-- **Token** (recomendado en Docker/CI, donde no hay SSH): crear un token y
-  configurarlo una vez en Composer:
-  ```bash
-  composer config --global --auth github-oauth.github.com <TU_TOKEN>
-  ```
-  Token recomendado: *fine-grained* con permiso **Contents: Read-only** sobre el
-  repo (o *classic* con scope `repo`). En contenedores, ejecuta esto **dentro**
-  del contenedor; el token queda en su `auth.json`.
-
-> Errores típicos: `404 Not Found` => no eres colaborador (o no aceptaste la
-> invitación). `No token given` / pide credenciales => falta configurar SSH o el
-> token según tu entorno.
+> Nota sobre rate limit: si omites `"no-api": true`, Composer usa la API de
+> GitHub, que sin token limita a ~60 peticiones/hora. Con `"no-api": true` (o
+> configurando un token con `composer config --global --auth github-oauth.github.com <TOKEN>`)
+> se evita ese límite.
 
 ### Desarrollo local del propio paquete (path repository)
 
