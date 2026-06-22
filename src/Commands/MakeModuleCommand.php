@@ -27,6 +27,9 @@ class MakeModuleCommand extends Command
     /** Sentinela: generar la migración dentro del módulo en vez de en Suite. */
     private const LOCAL_TARGET = 'local';
 
+    /** Archivos generados, para el resumen final. @var list<string> */
+    private array $created = [];
+
     /** Namespace raíz de los módulos (config: module-generator.module_namespace). */
     private string $moduleNs = 'App\\Modules';
 
@@ -81,131 +84,196 @@ class MakeModuleCommand extends Command
 
         $basePath = $this->nsToPath($this->moduleNs)."/{$moduleNamePlural}";
 
-        // Verificar si el módulo ya existe
-        if (File::exists($basePath)) {
-            $this->error("Module '{$moduleNamePlural}' already exists!");
+        // El módulo no debe existir: módulo, contratos compartidos ni vistas Vue.
+        $conflicts = array_values(array_filter([
+            $basePath,
+            $this->nsToPath($this->sharedNs)."/{$moduleNamePlural}",
+            resource_path("js/{$this->pagesPath}/{$moduleNamePlural}"),
+        ], static fn (string $p): bool => File::exists($p)));
+
+        if ($conflicts !== []) {
+            $this->newLine();
+            $this->components->error("El módulo '{$moduleNamePlural}' ya existe. No se creó nada.");
+            foreach ($conflicts as $conflict) {
+                $this->components->twoColumnDetail('<fg=gray>Ya existe</>', $conflict);
+            }
+            $this->newLine();
+
             return Command::FAILURE;
         }
 
-        $this->info("Creating DDD module: {$moduleNamePlural}");
+        // ===== Cabecera =====
+        $this->newLine();
+        $this->components->info("Generando módulo  <options=bold>{$moduleNamePlural}</>");
+        $this->components->twoColumnDetail('<fg=gray>Tabla</>', "<fg=green;options=bold>{$tableName}</>");
+        $this->components->twoColumnDetail('<fg=gray>Namespace</>', "{$this->moduleNs}\\{$moduleNamePlural}");
+        $this->newLine();
 
-        // ===== Migración + (opcional) seeder =====
-        // En Suite (si está accesible) o, como respaldo (p.ej. en contenedores
-        // donde Suite no está montado), dentro del propio módulo.
+        // ===== Decisiones de migración/seeder (Suite o respaldo local) =====
         $suitePath = $this->resolveSuiteBasePath();
         if ($suitePath === null) {
             return Command::FAILURE;
         }
 
-        if ($suitePath === self::LOCAL_TARGET) {
-            // Respaldo local: migración dentro del módulo (la carga el provider).
-            $localMigrationsPath = "{$basePath}/Infrastructure/Database/Migrations";
-            File::ensureDirectoryExists($localMigrationsPath);
-            $this->writeMigrationFile($localMigrationsPath, $tableName);
-            $this->line("Created: Infrastructure/Database/Migrations (migración local; muévela a Suite cuando esté disponible)");
-        } else {
-            $migrationProject = $this->chooseProject(
-                "{$suitePath}/database/migrations/tenant",
-                'migraciones'
-            );
-            $this->createMigration($suitePath, $migrationProject, $moduleNamePlural, $tableName);
-
-            if ($this->confirm('¿Desea agregar un seeder para este módulo?', false)) {
-                // El seeder vive en el mismo proyecto que la migración.
-                $this->createSeeder($suitePath, $migrationProject, $moduleNamePlural, $tableName);
-            }
+        $migrationProject = null;
+        $wantSeeder = false;
+        if ($suitePath !== self::LOCAL_TARGET) {
+            $migrationProject = $this->chooseProject("{$suitePath}/database/migrations/tenant", 'migraciones');
+            $wantSeeder = $this->confirm('¿Desea agregar un seeder para este módulo?', false);
         }
 
-        // ===== Estructura del módulo =====
-        $modelsPath = "{$basePath}/Infrastructure/Database/Models";
-        File::makeDirectory($modelsPath, 0755, true);
-        $this->line("Created: {$modelsPath}");
+        // ===== Fases de generación (se ejecutan bajo barra de progreso) =====
+        $phases = [];
 
-        $this->createModel($modelsPath, $moduleNamePlural, $moduleNameSingular, $tableName);
+        if ($suitePath === self::LOCAL_TARGET) {
+            $phases['Migración (local)'] = function () use ($basePath, $tableName): void {
+                $dir = "{$basePath}/Infrastructure/Database/Migrations";
+                File::ensureDirectoryExists($dir);
+                $this->recordCreated($this->writeMigrationFile($dir, $tableName));
+            };
+        } else {
+            $phases['Migración (Suite)'] = function () use ($suitePath, $migrationProject, $moduleNamePlural, $tableName): void {
+                $this->createMigration($suitePath, $migrationProject, $moduleNamePlural, $tableName);
+            };
+        }
 
-        $entitiesPath = "{$basePath}/Domain/Entities";
-        File::makeDirectory($entitiesPath, 0755, true);
-        $this->line("Created: {$entitiesPath}");
+        $phases['Modelo Eloquent'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular, $tableName): void {
+            $path = "{$basePath}/Infrastructure/Database/Models";
+            File::makeDirectory($path, 0755, true);
+            $this->createModel($path, $moduleNamePlural, $moduleNameSingular, $tableName);
+        };
+        $phases['Entidad de dominio'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
+            $path = "{$basePath}/Domain/Entities";
+            File::makeDirectory($path, 0755, true);
+            $this->createDomainEntity($path, $moduleNamePlural, $moduleNameSingular);
+        };
+        $phases['DTOs'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
+            $path = "{$basePath}/Application/DTOs";
+            File::makeDirectory($path, 0755, true);
+            $this->createDto($path, $moduleNamePlural, $moduleNameSingular);
+            $this->createCollectionDto($path, $moduleNamePlural, $moduleNameSingular);
+        };
+        $phases['Repositorio (interfaz)'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
+            File::makeDirectory("{$basePath}/Domain/Repositories", 0755, true);
+            $this->createRepositoryInterface($basePath, $moduleNamePlural, $moduleNameSingular);
+        };
+        $phases['Commands'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
+            $path = "{$basePath}/Application/Commands";
+            File::makeDirectory($path, 0755, true);
+            $this->createCommands($path, $moduleNamePlural, $moduleNameSingular);
+        };
+        $phases['Handlers'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
+            $path = "{$basePath}/Application/Handlers";
+            File::makeDirectory($path, 0755, true);
+            $this->createHandlers($path, $moduleNamePlural, $moduleNameSingular);
+        };
+        $phases['Repositorio (Eloquent)'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular, $moduleNameLower, $moduleNamePluralLower): void {
+            File::makeDirectory("{$basePath}/Infrastructure/Database/Repositories", 0755, true);
+            $this->createRepositoryImplementation($basePath, $moduleNamePlural, $moduleNameSingular, $moduleNameLower, $moduleNamePluralLower);
+        };
+        $phases['Excepciones'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
+            File::makeDirectory("{$basePath}/Domain/Exceptions", 0755, true);
+            $this->createNotFoundException($basePath, $moduleNamePlural, $moduleNameSingular);
+        };
+        $phases['Form Requests'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
+            $path = "{$basePath}/Infrastructure/Http/Requests";
+            File::makeDirectory($path, 0755, true);
+            $this->createRequests($path, $moduleNamePlural, $moduleNameSingular);
+        };
+        $phases['Controlador'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular, $moduleNamePluralLower, $moduleNameSingularLower): void {
+            File::makeDirectory("{$basePath}/Infrastructure/Http/Controllers", 0755, true);
+            $this->createController($basePath, $moduleNamePlural, $moduleNameSingular, $moduleNamePluralLower, $moduleNameSingularLower);
+        };
+        $phases['Vistas Vue'] = function () use ($moduleNamePlural, $moduleNamePluralLower, $moduleNameSingularLower): void {
+            $this->createVueFront($moduleNamePlural, $moduleNamePluralLower, $moduleNameSingularLower);
+        };
+        $phases['Rutas'] = function () use ($basePath, $moduleNamePlural, $moduleNameLower, $moduleNamePluralLower, $moduleNameSingular): void {
+            File::makeDirectory("{$basePath}/Infrastructure/Http/Routes", 0755, true);
+            $this->createRoutesFile($basePath, $moduleNamePlural, $moduleNameLower, $moduleNamePluralLower, $moduleNameSingular);
+        };
+        $phases['DataBridge (contratos)'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular, $tableName): void {
+            $this->createDataBridge($basePath, $moduleNamePlural, $moduleNameSingular, $tableName);
+        };
+        $phases['ServiceProvider'] = function () use ($basePath, $moduleNamePlural, $moduleNameLower, $moduleNameSingular): void {
+            $this->createServiceProvider($basePath, $moduleNamePlural, $moduleNameLower, $moduleNameSingular);
+        };
+        $phases['Registro en config/app.php'] = function () use ($moduleNamePlural): void {
+            $this->registerProviderInConfig($moduleNamePlural);
+        };
 
-        $this->createDomainEntity($entitiesPath, $moduleNamePlural, $moduleNameSingular);
+        if ($wantSeeder) {
+            $phases['Seeder (Suite)'] = function () use ($suitePath, $migrationProject, $moduleNamePlural, $tableName): void {
+                $this->createSeeder($suitePath, $migrationProject, $moduleNamePlural, $tableName);
+            };
+        }
 
-        $dtosPath = "{$basePath}/Application/DTOs";
-        File::makeDirectory($dtosPath, 0755, true);
-        $this->line("Created: {$dtosPath}");
+        $this->runPhases($phases);
 
-        $this->createDto($dtosPath, $moduleNamePlural, $moduleNameSingular);
-        $this->createCollectionDto($dtosPath, $moduleNamePlural, $moduleNameSingular);
+        $this->components->task('Limpiando cachés', function (): bool {
+            $this->callSilently('optimize:clear');
 
-        $repositoriesPath = "{$basePath}/Domain/Repositories";
-        File::makeDirectory($repositoriesPath, 0755, true);
-        $this->line("Created: {$repositoriesPath}");
+            return true;
+        });
 
-        $this->createRepositoryInterface($basePath, $moduleNamePlural, $moduleNameSingular);
+        // ===== Resumen =====
+        $migrationTarget = $suitePath === self::LOCAL_TARGET
+            ? 'local (dentro del módulo)'
+            : "Suite · {$migrationProject}";
 
-        $commandsPath = "{$basePath}/Application/Commands";
-        File::makeDirectory($commandsPath, 0755, true);
-        $this->line("Created: {$commandsPath}");
-
-        $this->createCommands($commandsPath, $moduleNamePlural, $moduleNameSingular);
-
-        $handlersPath = "{$basePath}/Application/Handlers";
-        File::makeDirectory($handlersPath, 0755, true);
-        $this->line("Created: {$handlersPath}");
-
-        $this->createHandlers($handlersPath, $moduleNamePlural, $moduleNameSingular);
-
-        $repositoryImplPath = "{$basePath}/Infrastructure/Database/Repositories";
-        File::makeDirectory($repositoryImplPath, 0755, true);
-        $this->line("Created: {$repositoryImplPath}");
-
-        $this->createRepositoryImplementation($basePath, $moduleNamePlural, $moduleNameSingular, $moduleNameLower, $moduleNamePluralLower);
-
-        $exceptionsPath = "{$basePath}/Domain/Exceptions";
-        File::makeDirectory($exceptionsPath, 0755, true);
-        $this->line("Created: {$exceptionsPath}");
-
-        $this->createNotFoundException($basePath, $moduleNamePlural, $moduleNameSingular);
-
-        $requestsPath = "{$basePath}/Infrastructure/Http/Requests";
-        File::makeDirectory($requestsPath, 0755, true);
-        $this->line("Created: {$requestsPath}");
-
-        $this->createRequests($requestsPath, $moduleNamePlural, $moduleNameSingular);
-
-        $controllersPath = "{$basePath}/Infrastructure/Http/Controllers";
-        File::makeDirectory($controllersPath, 0755, true);
-        $this->line("Created: {$controllersPath}");
-
-        $this->createController($basePath, $moduleNamePlural, $moduleNameSingular, $moduleNamePluralLower, $moduleNameSingularLower);
-
-        $this->createVueFront($moduleNamePlural, $moduleNamePluralLower, $moduleNameSingularLower);
-
-        $routesPath = "{$basePath}/Infrastructure/Http/Routes";
-        File::makeDirectory($routesPath, 0755, true);
-        $this->line("Created: {$routesPath}");
-
-        $this->createRoutesFile($basePath, $moduleNamePlural, $moduleNameLower, $moduleNamePluralLower, $moduleNameSingular);
-
-        $this->createDataBridge($basePath, $moduleNamePlural, $moduleNameSingular, $tableName);
-
-        $this->createServiceProvider($basePath, $moduleNamePlural, $moduleNameLower, $moduleNameSingular);
-
-        $this->registerProviderInConfig($moduleNamePlural);
-
-        // Limpieza de cachés para que Laravel detecte el nuevo provider y rutas
         $this->newLine();
-        $this->info("Limpiando cachés...");
-        $this->call('optimize:clear');
-
+        $this->components->info("Módulo <options=bold>{$moduleNamePlural}</> creado correctamente");
+        $this->components->twoColumnDetail('<fg=gray>Archivos generados</>', '<fg=green;options=bold>'.count($this->created).'</>');
+        $this->components->twoColumnDetail('<fg=gray>Migración</>', $migrationTarget);
+        $this->components->twoColumnDetail('<fg=gray>Backend</>', "app/Modules/{$moduleNamePlural}/");
+        $this->components->twoColumnDetail('<fg=gray>Frontend</>', "resources/js/{$this->pagesPath}/{$moduleNamePlural}/");
         $this->newLine();
-        $this->info("Archivos del módulo '{$moduleNamePlural}' creados correctamente!");
-        $this->line("Backend: app/Modules/{$moduleNamePlural}/  |  Frontend: resources/js/Pages/{$moduleNamePlural}/");
+        $this->components->bulletList([
+            "Ejecuta <fg=cyan>php artisan migrate</> para crear la tabla <fg=green>{$tableName}</>",
+            "Carga la vista en <fg=cyan>/{$moduleNamePluralLower}</>",
+        ]);
         $this->newLine();
-        $this->info("Ejecute 'php artisan migrate' y cargue la vista en {APP_URL}/{$moduleNamePluralLower}");
 
         return Command::SUCCESS;
     }
     
+    /**
+     * Registra un archivo generado (para el conteo del resumen). Sustituye a la
+     * impresión inmediata de cada "Created:" para no romper la barra de progreso.
+     */
+    private function recordCreated(string $file): void
+    {
+        $this->created[] = $file;
+    }
+
+    /**
+     * Ejecuta las fases de generación mostrando una barra de progreso con el
+     * nombre de la fase actual.
+     *
+     * @param  array<string, callable>  $phases
+     */
+    private function runPhases(array $phases): void
+    {
+        $bar = $this->output->createProgressBar(count($phases));
+        $bar->setFormat('  %bar%  %percent:3s%%  <fg=gray>%message%</>');
+        $bar->setBarCharacter('<fg=green>█</>');
+        $bar->setProgressCharacter('<fg=green>█</>');
+        $bar->setEmptyBarCharacter('░');
+        $bar->setMessage('Iniciando…');
+        $bar->start();
+
+        foreach ($phases as $label => $task) {
+            $bar->setMessage((string) $label);
+            $bar->display();
+            $task();
+            $bar->advance();
+            usleep(30000);
+        }
+
+        $bar->setMessage('Completado');
+        $bar->finish();
+        $this->newLine(2);
+    }
+
     /**
      * Resuelve la ruta base del repositorio Suite. Reintenta ante rutas
      * inválidas (útil en Docker donde Suite puede estar montado en otra ruta) y
@@ -330,7 +398,7 @@ class MakeModuleCommand extends Command
     ): void {
         $dir = "{$suitePath}/database/migrations/tenant/{$project}/{$moduleFolder}";
         $fileName = $this->writeMigrationFile($dir, $tableName);
-        $this->line("Created: Suite/database/migrations/tenant/{$project}/{$moduleFolder}/{$fileName}");
+        $this->recordCreated("Suite/database/migrations/tenant/{$project}/{$moduleFolder}/{$fileName}");
     }
 
     /**
@@ -442,7 +510,7 @@ class {$seederClass} extends Seeder
 PHP;
 
         File::put("{$dir}/{$seederClass}.php", $content);
-        $this->line("Created: Suite/database/seeders/tenant/{$project}/{$seederClass}.php");
+        $this->recordCreated("Suite/database/seeders/tenant/{$project}/{$seederClass}.php");
     }
 
     /**
@@ -495,7 +563,7 @@ class {$moduleNameSingular} extends Model
 PHP;
 
         File::put("{$modelsPath}/{$moduleNameSingular}.php", $content);
-        $this->line("Created: Infrastructure/Database/Models/{$moduleNameSingular}.php");
+        $this->recordCreated("Infrastructure/Database/Models/{$moduleNameSingular}.php");
     }
 
     /**
@@ -568,7 +636,7 @@ final class {$moduleNameSingular}
 PHP;
 
         File::put("{$entitiesPath}/{$moduleNameSingular}.php", $content);
-        $this->line("Created: Domain/Entities/{$moduleNameSingular}.php");
+        $this->recordCreated("Domain/Entities/{$moduleNameSingular}.php");
     }
 
     /**
@@ -638,7 +706,7 @@ final class {$moduleNameSingular}DTO
 PHP;
 
         File::put("{$dtosPath}/{$moduleNameSingular}DTO.php", $content);
-        $this->line("Created: Application/DTOs/{$moduleNameSingular}DTO.php");
+        $this->recordCreated("Application/DTOs/{$moduleNameSingular}DTO.php");
     }
 
     /**
@@ -694,7 +762,7 @@ final class {$moduleNameSingular}CollectionDTO
 PHP;
 
         File::put("{$dtosPath}/{$moduleNameSingular}CollectionDTO.php", $content);
-        $this->line("Created: Application/DTOs/{$moduleNameSingular}CollectionDTO.php");
+        $this->recordCreated("Application/DTOs/{$moduleNameSingular}CollectionDTO.php");
     }
 
     /**
@@ -723,7 +791,7 @@ final class Create{$moduleNameSingular}Command
 }
 PHP;
         File::put("{$commandsPath}/Create{$moduleNameSingular}Command.php", $createContent);
-        $this->line("Created: Application/Commands/Create{$moduleNameSingular}Command.php");
+        $this->recordCreated("Application/Commands/Create{$moduleNameSingular}Command.php");
 
         // Update
         $updateContent = <<<PHP
@@ -743,7 +811,7 @@ final class Update{$moduleNameSingular}Command
 }
 PHP;
         File::put("{$commandsPath}/Update{$moduleNameSingular}Command.php", $updateContent);
-        $this->line("Created: Application/Commands/Update{$moduleNameSingular}Command.php");
+        $this->recordCreated("Application/Commands/Update{$moduleNameSingular}Command.php");
 
         // Delete
         $deleteContent = <<<PHP
@@ -761,7 +829,7 @@ final class Delete{$moduleNameSingular}Command
 }
 PHP;
         File::put("{$commandsPath}/Delete{$moduleNameSingular}Command.php", $deleteContent);
-        $this->line("Created: Application/Commands/Delete{$moduleNameSingular}Command.php");
+        $this->recordCreated("Application/Commands/Delete{$moduleNameSingular}Command.php");
     }
 
     /**
@@ -808,7 +876,7 @@ final class Create{$moduleNameSingular}Handler
 }
 PHP;
         File::put("{$handlersPath}/Create{$moduleNameSingular}Handler.php", $createContent);
-        $this->line("Created: Application/Handlers/Create{$moduleNameSingular}Handler.php");
+        $this->recordCreated("Application/Handlers/Create{$moduleNameSingular}Handler.php");
 
         // List
         $listContent = <<<PHP
@@ -844,7 +912,7 @@ final class List{$moduleNamePlural}Handler
 }
 PHP;
         File::put("{$handlersPath}/List{$moduleNamePlural}Handler.php", $listContent);
-        $this->line("Created: Application/Handlers/List{$moduleNamePlural}Handler.php");
+        $this->recordCreated("Application/Handlers/List{$moduleNamePlural}Handler.php");
 
         // Update
         $updateContent = <<<PHP
@@ -882,7 +950,7 @@ final class Update{$moduleNameSingular}Handler
 }
 PHP;
         File::put("{$handlersPath}/Update{$moduleNameSingular}Handler.php", $updateContent);
-        $this->line("Created: Application/Handlers/Update{$moduleNameSingular}Handler.php");
+        $this->recordCreated("Application/Handlers/Update{$moduleNameSingular}Handler.php");
 
         // Get by UUID
         $getContent = <<<PHP
@@ -915,7 +983,7 @@ final class Get{$moduleNameSingular}ByUuidHandler
 }
 PHP;
         File::put("{$handlersPath}/Get{$moduleNameSingular}ByUuidHandler.php", $getContent);
-        $this->line("Created: Application/Handlers/Get{$moduleNameSingular}ByUuidHandler.php");
+        $this->recordCreated("Application/Handlers/Get{$moduleNameSingular}ByUuidHandler.php");
 
         // Delete
         $deleteContent = <<<PHP
@@ -948,7 +1016,7 @@ final class Delete{$moduleNameSingular}Handler
 }
 PHP;
         File::put("{$handlersPath}/Delete{$moduleNameSingular}Handler.php", $deleteContent);
-        $this->line("Created: Application/Handlers/Delete{$moduleNameSingular}Handler.php");
+        $this->recordCreated("Application/Handlers/Delete{$moduleNameSingular}Handler.php");
     }
 
     /**
@@ -963,7 +1031,7 @@ PHP;
         if (!File::exists($pagesPath)) {
             File::makeDirectory($pagesPath, 0755, true);
         }
-        $this->line("Created: resources/js/Pages/{$moduleNamePlural}");
+        $this->recordCreated("resources/js/Pages/{$moduleNamePlural}");
 
         $plural = $moduleNamePlural;
         $pluralLower = $moduleNamePluralLower;
@@ -1128,7 +1196,7 @@ PHP;
 </style>
 VUE;
         File::put("{$pagesPath}/Index.vue", $indexContent);
-        $this->line("Created: resources/js/Pages/{$moduleNamePlural}/Index.vue");
+        $this->recordCreated("resources/js/Pages/{$moduleNamePlural}/Index.vue");
 
         // ===== Create.vue =====
         $createContent = <<<VUE
@@ -1262,7 +1330,7 @@ VUE;
 </style>
 VUE;
         File::put("{$pagesPath}/Create.vue", $createContent);
-        $this->line("Created: resources/js/Pages/{$moduleNamePlural}/Create.vue");
+        $this->recordCreated("resources/js/Pages/{$moduleNamePlural}/Create.vue");
 
         // ===== Edit.vue =====
         $editContent = <<<VUE
@@ -1416,7 +1484,7 @@ VUE;
 </style>
 VUE;
         File::put("{$pagesPath}/Edit.vue", $editContent);
-        $this->line("Created: resources/js/Pages/{$moduleNamePlural}/Edit.vue");
+        $this->recordCreated("resources/js/Pages/{$moduleNamePlural}/Edit.vue");
 
         // ===== Show.vue =====
         $showContent = <<<VUE
@@ -1475,7 +1543,7 @@ VUE;
 </template>
 VUE;
         File::put("{$pagesPath}/Show.vue", $showContent);
-        $this->line("Created: resources/js/Pages/{$moduleNamePlural}/Show.vue");
+        $this->recordCreated("resources/js/Pages/{$moduleNamePlural}/Show.vue");
     }
 
     /**
@@ -1534,7 +1602,7 @@ interface {$listContract}
 }
 PHP;
         File::put("{$sharedDir}/{$listContract}.php", $listContractContent);
-        $this->line("Created: Shared/Contracts/{$moduleNamePlural}/{$listContract}.php");
+        $this->recordCreated("Shared/Contracts/{$moduleNamePlural}/{$listContract}.php");
 
         // ===== Shared: Match contract =====
         $matchContractContent = <<<PHP
@@ -1562,7 +1630,7 @@ interface {$matchContract}
 }
 PHP;
         File::put("{$sharedDir}/{$matchContract}.php", $matchContractContent);
-        $this->line("Created: Shared/Contracts/{$moduleNamePlural}/{$matchContract}.php");
+        $this->recordCreated("Shared/Contracts/{$moduleNamePlural}/{$matchContract}.php");
 
         // ===== Shared: README =====
         $readmeContent = <<<MD
@@ -1620,7 +1688,7 @@ matchByField(array \$rows, string \$field, mixed \$expectedValue): ?array;
 ```
 MD;
         File::put("{$sharedDir}/README.md", $readmeContent);
-        $this->line("Created: Shared/Contracts/{$moduleNamePlural}/README.md");
+        $this->recordCreated("Shared/Contracts/{$moduleNamePlural}/README.md");
 
         // ===== Module: List DTO =====
         $listDtoContent = <<<PHP
@@ -1697,7 +1765,7 @@ final class {$listDto} implements JsonSerializable
 }
 PHP;
         File::put("{$basePath}/Application/DTOs/{$listDto}.php", $listDtoContent);
-        $this->line("Created: Application/DTOs/{$listDto}.php");
+        $this->recordCreated("Application/DTOs/{$listDto}.php");
 
         // ===== Module: Fetch list service =====
         $listServiceContent = <<<PHP
@@ -1731,7 +1799,7 @@ final class {$listService} implements {$listContract}
 }
 PHP;
         File::put("{$servicesPath}/{$listService}.php", $listServiceContent);
-        $this->line("Created: Application/Services/{$listService}.php");
+        $this->recordCreated("Application/Services/{$listService}.php");
 
         // ===== Module: Match row service =====
         $matchServiceContent = <<<PHP
@@ -1762,7 +1830,7 @@ final class {$matchService} implements {$matchContract}
 }
 PHP;
         File::put("{$servicesPath}/{$matchService}.php", $matchServiceContent);
-        $this->line("Created: Application/Services/{$matchService}.php");
+        $this->recordCreated("Application/Services/{$matchService}.php");
 
         // ===== Module: List repository interface =====
         $listRepoInterfaceContent = <<<PHP
@@ -1786,7 +1854,7 @@ interface {$listRepoInterface}
 }
 PHP;
         File::put("{$basePath}/Domain/Repositories/{$listRepoInterface}.php", $listRepoInterfaceContent);
-        $this->line("Created: Domain/Repositories/{$listRepoInterface}.php");
+        $this->recordCreated("Domain/Repositories/{$listRepoInterface}.php");
 
         // ===== Module: Eloquent list repository =====
         $listRepoImplContent = <<<PHP
@@ -1918,7 +1986,7 @@ final class {$listRepoImpl} implements {$listRepoInterface}
 }
 PHP;
         File::put("{$basePath}/Infrastructure/Database/Repositories/{$listRepoImpl}.php", $listRepoImplContent);
-        $this->line("Created: Infrastructure/Database/Repositories/{$listRepoImpl}.php");
+        $this->recordCreated("Infrastructure/Database/Repositories/{$listRepoImpl}.php");
     }
 
     private function createServiceProvider(
@@ -1974,7 +2042,7 @@ final class {$serviceProviderName} extends ServiceProvider
 PHP;
         
         File::put("{$basePath}/{$serviceProviderName}.php", $content);
-        $this->line("Created: {$serviceProviderName}.php");
+        $this->recordCreated("{$serviceProviderName}.php");
     }
     
     /**
@@ -2013,7 +2081,7 @@ interface {$interfaceName}
 PHP;
 
         File::put("{$basePath}/Domain/Repositories/{$interfaceName}.php", $content);
-        $this->line("Created: Domain/Repositories/{$interfaceName}.php");
+        $this->recordCreated("Domain/Repositories/{$interfaceName}.php");
     }
     
     /**
@@ -2127,7 +2195,7 @@ final class {$repositoryName} implements {$interfaceName}
 PHP;
 
         File::put("{$basePath}/Infrastructure/Database/Repositories/{$repositoryName}.php", $content);
-        $this->line("Created: Infrastructure/Database/Repositories/{$repositoryName}.php");
+        $this->recordCreated("Infrastructure/Database/Repositories/{$repositoryName}.php");
     }
     
     /**
@@ -2158,7 +2226,7 @@ final class {$exceptionName} extends Exception
 PHP;
         
         File::put("{$basePath}/Domain/Exceptions/{$exceptionName}.php", $content);
-        $this->line("Created: Domain/Exceptions/{$exceptionName}.php");
+        $this->recordCreated("Domain/Exceptions/{$exceptionName}.php");
     }
     
     /**
@@ -2293,7 +2361,7 @@ final class {$controllerName} extends Controller
 PHP;
 
         File::put("{$basePath}/Infrastructure/Http/Controllers/{$controllerName}.php", $content);
-        $this->line("Created: Infrastructure/Http/Controllers/{$controllerName}.php");
+        $this->recordCreated("Infrastructure/Http/Controllers/{$controllerName}.php");
     }
 
     /**
@@ -2330,7 +2398,7 @@ final class Create{$moduleNameSingular}Request extends FormRequest
 }
 PHP;
         File::put("{$requestsPath}/Create{$moduleNameSingular}Request.php", $createContent);
-        $this->line("Created: Infrastructure/Http/Requests/Create{$moduleNameSingular}Request.php");
+        $this->recordCreated("Infrastructure/Http/Requests/Create{$moduleNameSingular}Request.php");
 
         // Update
         $updateContent = <<<PHP
@@ -2358,7 +2426,7 @@ final class Update{$moduleNameSingular}Request extends FormRequest
 }
 PHP;
         File::put("{$requestsPath}/Update{$moduleNameSingular}Request.php", $updateContent);
-        $this->line("Created: Infrastructure/Http/Requests/Update{$moduleNameSingular}Request.php");
+        $this->recordCreated("Infrastructure/Http/Requests/Update{$moduleNameSingular}Request.php");
 
         // Filter (listado: búsqueda + paginación)
         $filterContent = <<<PHP
@@ -2393,7 +2461,7 @@ final class Filter{$moduleNamePlural}Request extends FormRequest
 }
 PHP;
         File::put("{$requestsPath}/Filter{$moduleNamePlural}Request.php", $filterContent);
-        $this->line("Created: Infrastructure/Http/Requests/Filter{$moduleNamePlural}Request.php");
+        $this->recordCreated("Infrastructure/Http/Requests/Filter{$moduleNamePlural}Request.php");
     }
 
     /**
@@ -2438,7 +2506,7 @@ Route::middleware([{$middleware}])->group(function () {
 PHP;
 
         File::put("{$basePath}/Infrastructure/Http/Routes/web.php", $content);
-        $this->line("Created: Infrastructure/Http/Routes/web.php");
+        $this->recordCreated("Infrastructure/Http/Routes/web.php");
     }
 
     /**
@@ -2481,7 +2549,7 @@ PHP;
         }
 
         File::put($configPath, $content);
-        $this->line("Registered provider in config/app.php: {$moduleNamePlural}ServiceProvider");
+        $this->recordCreated("config/app.php (provider {$moduleNamePlural}ServiceProvider)");
     }
 }
 
