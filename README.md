@@ -30,31 +30,10 @@ composer config repositories.module-generator \
   '{"type":"vcs","url":"https://github.com/P4N77/module-generator.git","no-api":true}'
 
 # 2. Requerir el paquete (es una herramienta de desarrollo => --dev)
-composer require --dev sodeker/module-generator:^1.0
+composer require --dev sodeker/module-generator:^1.0.3
 ```
 
 El `ServiceProvider` se auto-descubre (Laravel package discovery).
-
-> En Docker/CI corre estos comandos **dentro** del contenedor (donde está el
-> `composer.json`).
-
-> Nota sobre rate limit: si omites `"no-api": true`, Composer usa la API de
-> GitHub, que sin token limita a ~60 peticiones/hora. Con `"no-api": true` (o
-> configurando un token con `composer config --global --auth github-oauth.github.com <TOKEN>`)
-> se evita ese límite.
-
-### Desarrollo local del propio paquete (path repository)
-
-Si trabajas sobre el paquete junto al proyecto consumidor:
-
-```jsonc
-"repositories": [
-    { "type": "path", "url": "../sodeker-module-generator", "options": { "symlink": true } }
-]
-```
-```bash
-composer require --dev sodeker/module-generator:@dev
-```
 
 ## Uso
 
@@ -74,19 +53,6 @@ El comando pregunta de forma interactiva:
    que el provider ya carga) en vez de en Suite.
 2. **Proyecto de migraciones** (lista las carpetas de `migrations/tenant` + opción `otro`).
 3. **¿Agregar seeder?** Si sí, se crea en el mismo proyecto que la migración.
-
-### En Docker
-
-Dentro de un contenedor, `../Suite` normalmente no resuelve. Tienes dos opciones:
-
-- Montar Suite en el contenedor y apuntar la ruta con una variable de entorno
-  en el `.env` del proyecto:
-  ```env
-  MODULE_GENERATOR_SUITE_PATH=/var/www/Suite
-  ```
-  (ajusta a donde esté montado Suite). Así el prompt ya trae esa ruta por defecto.
-- Si Suite no está montado, responde **`local`** en el prompt: la migración se
-  genera dentro del módulo y la mueves a Suite cuando esté disponible.
 
 ## Configuración
 
