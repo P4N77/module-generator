@@ -34,6 +34,8 @@ class MakeModuleCommand extends Command
         'sat' => 3,
         'iris' => 4,
         'tut' => 5,
+        'f16' => 6,
+        'fintegra' => 7,
     ];
 
     /** Archivos generados, para el resumen final. @var list<string> */
@@ -70,6 +72,8 @@ class MakeModuleCommand extends Command
         $connection = config('module-generator.connection', 'tenant');
         $this->connection = $connection === null ? null : (string) $connection;
         $this->pagesPath = trim((string) config('module-generator.pages_path', 'Pages'), '/');
+
+        $this->renderBanner();
 
         $rawName = $this->argument('name');
 
@@ -169,11 +173,12 @@ class MakeModuleCommand extends Command
 
         // ===== Cabecera =====
         $this->newLine();
-        $this->components->info("Generando módulo  <options=bold>{$moduleNamePlural}</>");
-        $this->components->twoColumnDetail('<fg=gray>Tabla</>', "<fg=green;options=bold>{$tableName}</>");
-        $this->components->twoColumnDetail('<fg=gray>Namespace</>', "{$this->moduleNs}\\{$moduleNamePlural}");
-        $this->components->twoColumnDetail('<fg=gray>Código (code)</>', $hasCode ? '<fg=green>sí</>' : '<fg=gray>no</>');
-        $this->components->twoColumnDetail('<fg=gray>Tipo</>', $isInternal ? 'interno (guard)' : 'usuario (Casbin)');
+        $this->drawBox("Generando módulo · {$moduleNamePlural}", [
+            '<fg=gray>Tabla</>       '."<fg=green;options=bold>{$tableName}</>",
+            '<fg=gray>Namespace</>   '."{$this->moduleNs}\\{$moduleNamePlural}",
+            '<fg=gray>Código</>      '.($hasCode ? '<fg=green>sí (columna code única)</>' : '<fg=gray>no</>'),
+            '<fg=gray>Tipo</>        '.($isInternal ? '<fg=yellow>interno (guard Sodeker)</>' : '<fg=cyan>usuario (Casbin + menú)</>'),
+        ], 'green');
         $this->newLine();
 
         // ===== Decisiones de migración/seeder (Suite o respaldo local) =====
@@ -323,26 +328,119 @@ class MakeModuleCommand extends Command
         }
 
         $appId = self::APP_IDS[$appSlug] ?? 'N /* app_id de '.$appSlug.', ajústalo */';
+        $isSuiteApp = $appSlug === 'suite';
 
-        $this->components->warn('PASOS MANUALES para dejar el módulo operativo (permisos + menú):');
+        $this->drawBox('PASOS MANUALES · permisos + menú', [
+            '<fg=gray>Edita estos 3 archivos en Suite para dejar</>',
+            '<fg=gray>el módulo</> <options=bold>'.$moduleCode.'</> <fg=gray>operativo.</>',
+        ], 'yellow');
         $this->newLine();
 
-        $this->line("<fg=yellow>1)</> database/seeders/Landlord/TenantAppsSeeder.php");
-        $this->line("<fg=gray>   Agrega la entrada del módulo:</>");
-        $this->line("       ['uuid' => Str::ulid(), 'app_id' => {$appId}, 'code' => '{$moduleCode}', 'name' => '{$visibleName}', 'status' => 1, 'apps_required' => null],");
+        // 1) Registro del módulo (ModulesTenantAppsSeeder, dentro de CasbinSeeders).
+        $this->line("  <fg=yellow;options=bold>1)</> <options=underscore>database/seeders/Landlord/CasbinSeeders/ModulesTenantAppsSeeder.php</>");
+        $this->line("     <fg=gray>Agrega la entrada del módulo en el arreglo \$modules:</>");
+        $this->line("     <fg=green>['uuid' => Str::ulid(), 'app_id' => {$appId}, 'code' => '{$moduleCode}', 'name' => '{$visibleName}', 'status' => 1, 'apps_required' => null],</>");
         $this->newLine();
 
-        $this->line("<fg=yellow>2)</> database/seeders/Landlord/CasbinSeeders/PermissionsTableSeeder.php");
-        $this->line("<fg=gray>   Bajo el slug de la app '{$appSlug}':</>");
-        $this->line("       '{$moduleCode}' => ['view', 'edit', 'create', 'delete'],");
+        // 2) Permisos Casbin.
+        $this->line("  <fg=yellow;options=bold>2)</> <options=underscore>database/seeders/Landlord/CasbinSeeders/PermissionsTableSeeder.php</>");
+        $this->line("     <fg=gray>Dentro del arreglo, bajo el slug de la app '{$appSlug}':</>");
+        $this->line("     <fg=green>'{$moduleCode}' => ['view', 'edit', 'create', 'delete'],</>");
         $this->newLine();
 
-        $this->line("<fg=yellow>3)</> app/Http/Support/SuiteConfigModeResolver.php  (const ROUTES)");
-        $this->line("       '{$moduleCode}' => '{$indexUrl}',");
+        // 3) Ruta navegable: SuiteConfigModeResolver para app suite; CHILD_APP_MODULE_ROUTES para apps hijas.
+        if ($isSuiteApp) {
+            $this->line("  <fg=yellow;options=bold>3)</> <options=underscore>app/Http/Support/SuiteConfigModeResolver.php</>  <fg=gray>(const ROUTES)</>");
+            $this->line("     <fg=green>'{$moduleCode}' => '{$indexUrl}',</>");
+        } else {
+            $this->line("  <fg=yellow;options=bold>3)</> <options=underscore>app/Http/Middleware/HandleInertiaRequests.php</>  <fg=gray>(const CHILD_APP_MODULE_ROUTES)</>");
+            $this->line("     <fg=gray>Bajo la clave '{$appSlug}':</>");
+            $this->line("     <fg=green>'{$moduleCode}' => '{$indexUrl}',</>");
+        }
         $this->newLine();
+    }
 
-        $this->line("<fg=gray>Recuerda añadir '{$moduleCode}' a SUITE_MODULE_ROUTES / CHILD_APP_MODULE_ROUTES según corresponda.</>");
+    /**
+     * Banner decorativo de apertura: logo Sódeker (varita + portal ø con
+     * destellos) en púrpura de marca, con el título "MODULE GENERATOR". El
+     * púrpura se emite como hex; Symfony lo degrada al color ANSI más cercano
+     * en terminales sin soporte truecolor.
+     */
+    private function renderBanner(): void
+    {
+        $art = [
+            '                             ░█░',
+            '                            ▒███░',
+            '                    ░░   ░██  ▒',
+            '                    ▒▒ ░▒█▒░',
+            '                      ░██▒ ░██░',
+            '                     ▒██░   ░░',
+            '                    ▒██░',
+            '                  ░███░',
+            '                 ░██▒',
+            '      ░▒▒▒▒▒▒▒▒▒▒███░',
+            '    ░█████████████████',
+            '    ████▒░░░░▒███▒████░',
+            '    ████    ▒███░ ░███▒',
+            '    ███▒   ▒██▒░   ███▒',
+            '    ████░░███▒    ▒███▒',
+            '    ▒████████▒▒▒▒█████░',
+            '     ▒███████████████░',
+            '      ░▒▒█▒▒▒▒▒▒▒░░░',
+            '     ▒███▒',
+            '   ░████░',
+            '   ████░',
+            ' ▒████░',
+            '▒████░',
+        ];
+
+        $purple = '#7C3AED';
+
         $this->newLine();
+        foreach ($art as $line) {
+            $this->line("  <fg={$purple}>{$line}</>");
+        }
+
+        $this->newLine();
+        $this->line('     <options=bold>M O D U L E   G E N E R A T O R</>');
+        $this->line('     <fg=gray>Sódeker · Arquitectura DDD · maestras de Suite</>');
+        $this->newLine();
+    }
+
+    /**
+     * Dibuja una caja decorativa con título y líneas de contenido. Las líneas
+     * pueden contener tags de color (<fg=...>, <options=...>); su ancho visible
+     * se calcula ignorando dichos tags para alinear el borde derecho.
+     *
+     * @param  list<string>  $lines
+     */
+    private function drawBox(string $title, array $lines, string $border = 'cyan'): void
+    {
+        $inner = 60;
+        $b = fn (string $s): string => "<fg={$border}>{$s}</>";
+        $row = function (string $text) use ($inner, $b): void {
+            $cell = ' '.$text;
+            $cell .= str_repeat(' ', max(0, $inner - $this->visibleLen($cell)));
+            $this->line('  '.$b('│').$cell.$b('│'));
+        };
+
+        $this->line('  '.$b('╭'.str_repeat('─', $inner).'╮'));
+        if ($title !== '') {
+            $row('<options=bold>'.$title.'</>');
+            $this->line('  '.$b('├'.str_repeat('─', $inner).'┤'));
+        }
+        foreach ($lines as $line) {
+            $row($line);
+        }
+        $this->line('  '.$b('╰'.str_repeat('─', $inner).'╯'));
+    }
+
+    /**
+     * Longitud visible de un texto con tags de consola (ignora <...>).
+     */
+    private function visibleLen(string $text): int
+    {
+        return mb_strlen(preg_replace('/<[^>]+>/', '', $text) ?? $text);
     }
 
     /**
