@@ -27,8 +27,25 @@ class MakeModuleCommand extends Command
     /** Sentinela: generar la migración dentro del módulo en vez de en Suite. */
     private const LOCAL_TARGET = 'local';
 
+    /** IDs canónicos de apps del ecosistema (AppsSeeder de Suite). */
+    private const APP_IDS = [
+        'suite' => 1,
+        'econnect' => 2,
+        'sat' => 3,
+        'iris' => 4,
+        'tut' => 5,
+    ];
+
     /** Archivos generados, para el resumen final. @var list<string> */
     private array $created = [];
+
+    /**
+     * Contexto de generación compartido por todos los builders (naming derivado
+     * y feature flags). Se llena en handle() y cada create* lo lee con extract().
+     *
+     * @var array<string, mixed>
+     */
+    private array $ctx = [];
 
     /** Namespace raíz de los módulos (config: module-generator.module_namespace). */
     private string $moduleNs = 'App\\Modules';
@@ -56,7 +73,7 @@ class MakeModuleCommand extends Command
 
         $rawName = $this->argument('name');
 
-        // Detectar prefijo opcional con el formato "prefijo/nombreModulo" (ej. irs/novelties).
+        // Detectar prefijo opcional con el formato "prefijo/nombreModulo" (ej. shd/email_types).
         // Si no se indica, se usa el prefijo por defecto de la config (puede ser vacío).
         $prefix = trim((string) config('module-generator.table_prefix', ''));
         $prefix = $prefix !== '' ? Str::lower($prefix) : null;
@@ -73,9 +90,12 @@ class MakeModuleCommand extends Command
         $moduleName = Str::studly($moduleName);
         $moduleNamePlural = Str::studly($moduleNamePlural);
         $moduleNameSingular = Str::studly($moduleNameSingular);
-        $moduleNameLower = Str::snake($moduleName);
         $moduleNamePluralLower = Str::snake($moduleNamePlural);
-        $moduleNameSingularLower = Str::snake($moduleNameSingular);
+
+        // Naming derivado estándar de las maestras de Suite.
+        $moduleCode = Str::camel($moduleNamePlural);      // emailTypes  (route names + Casbin)
+        $singularCamel = Str::camel($moduleNameSingular); // emailType   (prop de detalle/edición)
+        $kebabPlural = Str::kebab($moduleNamePlural);     // email-types (segmentos de URL)
 
         // Nombre de la tabla: con prefijo "{prefix}_{module}" o solo "{module}"
         $tableName = $prefix !== null
@@ -102,11 +122,58 @@ class MakeModuleCommand extends Command
             return Command::FAILURE;
         }
 
+        // ===== Preguntas interactivas (definen la forma del módulo) =====
+        $hasCode = $this->confirm('¿El módulo lleva código (columna "code" con unicidad)?', true);
+
+        $type = $this->choice(
+            '¿Qué tipo de módulo es?',
+            ['usuario (Casbin + menú)', 'interno (solo Sodeker, sin menú)'],
+            'usuario (Casbin + menú)'
+        );
+        $isInternal = str_starts_with($type, 'interno');
+
+        $appSlug = 'suite';
+        $visibleName = $moduleNamePlural;
+        $indexUrl = '/'.$kebabPlural;
+
+        if (! $isInternal) {
+            $appSlug = Str::lower(trim((string) $this->choice(
+                'App destino (para seeders/permisos)',
+                ['suite', 'sat', 'iris', 'tut', 'econnect', 'f16', 'fintegra'],
+                'suite'
+            )));
+            $visibleName = trim((string) $this->ask('Nombre visible en español (ej. Tipos Email)', $moduleNamePlural));
+        }
+
+        $indexUrl = trim((string) $this->ask('URL del índice en español (ej. /tipos-email)', '/'.$kebabPlural));
+        $indexUrl = '/'.ltrim($indexUrl, '/');
+
+        // Contexto compartido por todos los builders.
+        $this->ctx = [
+            'ns' => $this->moduleNs,
+            'shared' => $this->sharedNs,
+            'basePath' => $basePath,
+            'plural' => $moduleNamePlural,        // EmailTypes
+            'singular' => $moduleNameSingular,    // EmailType
+            'moduleCode' => $moduleCode,          // emailTypes
+            'singularCamel' => $singularCamel,    // emailType
+            'kebab' => $kebabPlural,              // email-types
+            'table' => $tableName,                // shd_email_types
+            'connection' => $this->connection,    // tenant
+            'hasCode' => $hasCode,
+            'isInternal' => $isInternal,
+            'appSlug' => $appSlug,
+            'visibleName' => $visibleName,        // Tipos Email
+            'indexUrl' => $indexUrl,              // /tipos-email
+        ];
+
         // ===== Cabecera =====
         $this->newLine();
         $this->components->info("Generando módulo  <options=bold>{$moduleNamePlural}</>");
         $this->components->twoColumnDetail('<fg=gray>Tabla</>', "<fg=green;options=bold>{$tableName}</>");
         $this->components->twoColumnDetail('<fg=gray>Namespace</>', "{$this->moduleNs}\\{$moduleNamePlural}");
+        $this->components->twoColumnDetail('<fg=gray>Código (code)</>', $hasCode ? '<fg=green>sí</>' : '<fg=gray>no</>');
+        $this->components->twoColumnDetail('<fg=gray>Tipo</>', $isInternal ? 'interno (guard)' : 'usuario (Casbin)');
         $this->newLine();
 
         // ===== Decisiones de migración/seeder (Suite o respaldo local) =====
@@ -137,69 +204,28 @@ class MakeModuleCommand extends Command
             };
         }
 
-        $phases['Modelo Eloquent'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular, $tableName): void {
-            $path = "{$basePath}/Infrastructure/Database/Models";
-            File::makeDirectory($path, 0755, true);
-            $this->createModel($path, $moduleNamePlural, $moduleNameSingular, $tableName);
-        };
-        $phases['Entidad de dominio'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
-            $path = "{$basePath}/Domain/Entities";
-            File::makeDirectory($path, 0755, true);
-            $this->createDomainEntity($path, $moduleNamePlural, $moduleNameSingular);
-        };
-        $phases['DTOs'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
-            $path = "{$basePath}/Application/DTOs";
-            File::makeDirectory($path, 0755, true);
-            $this->createDto($path, $moduleNamePlural, $moduleNameSingular);
-            $this->createCollectionDto($path, $moduleNamePlural, $moduleNameSingular);
-        };
-        $phases['Repositorio (interfaz)'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
-            File::makeDirectory("{$basePath}/Domain/Repositories", 0755, true);
-            $this->createRepositoryInterface($basePath, $moduleNamePlural, $moduleNameSingular);
-        };
-        $phases['Commands'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
-            $path = "{$basePath}/Application/Commands";
-            File::makeDirectory($path, 0755, true);
-            $this->createCommands($path, $moduleNamePlural, $moduleNameSingular);
-        };
-        $phases['Handlers'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
-            $path = "{$basePath}/Application/Handlers";
-            File::makeDirectory($path, 0755, true);
-            $this->createHandlers($path, $moduleNamePlural, $moduleNameSingular);
-        };
-        $phases['Repositorio (Eloquent)'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular, $moduleNameLower, $moduleNamePluralLower): void {
-            File::makeDirectory("{$basePath}/Infrastructure/Database/Repositories", 0755, true);
-            $this->createRepositoryImplementation($basePath, $moduleNamePlural, $moduleNameSingular, $moduleNameLower, $moduleNamePluralLower);
-        };
-        $phases['Excepciones'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
-            File::makeDirectory("{$basePath}/Domain/Exceptions", 0755, true);
-            $this->createNotFoundException($basePath, $moduleNamePlural, $moduleNameSingular);
-        };
-        $phases['Form Requests'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular): void {
-            $path = "{$basePath}/Infrastructure/Http/Requests";
-            File::makeDirectory($path, 0755, true);
-            $this->createRequests($path, $moduleNamePlural, $moduleNameSingular);
-        };
-        $phases['Controlador'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular, $moduleNamePluralLower, $moduleNameSingularLower): void {
-            File::makeDirectory("{$basePath}/Infrastructure/Http/Controllers", 0755, true);
-            $this->createController($basePath, $moduleNamePlural, $moduleNameSingular, $moduleNamePluralLower, $moduleNameSingularLower);
-        };
-        $phases['Vistas Vue'] = function () use ($moduleNamePlural, $moduleNamePluralLower, $moduleNameSingularLower): void {
-            $this->createVueFront($moduleNamePlural, $moduleNamePluralLower, $moduleNameSingularLower);
-        };
-        $phases['Rutas'] = function () use ($basePath, $moduleNamePlural, $moduleNameLower, $moduleNamePluralLower, $moduleNameSingular): void {
-            File::makeDirectory("{$basePath}/Infrastructure/Http/Routes", 0755, true);
-            $this->createRoutesFile($basePath, $moduleNamePlural, $moduleNameLower, $moduleNamePluralLower, $moduleNameSingular);
-        };
-        $phases['DataBridge (contratos)'] = function () use ($basePath, $moduleNamePlural, $moduleNameSingular, $tableName): void {
-            $this->createDataBridge($basePath, $moduleNamePlural, $moduleNameSingular, $tableName);
-        };
-        $phases['ServiceProvider'] = function () use ($basePath, $moduleNamePlural, $moduleNameLower, $moduleNameSingular): void {
-            $this->createServiceProvider($basePath, $moduleNamePlural, $moduleNameLower, $moduleNameSingular);
-        };
-        $phases['Registro en config/app.php'] = function () use ($moduleNamePlural): void {
-            $this->registerProviderInConfig($moduleNamePlural);
-        };
+        $phases['Value Object (Status)'] = fn () => $this->createStatusValueObject();
+        $phases['Modelo Eloquent'] = fn () => $this->createModel();
+        $phases['Entidad de dominio'] = fn () => $this->createDomainEntity();
+        $phases['DTOs'] = fn () => $this->createDtos();
+        $phases['Repositorio (interfaz)'] = fn () => $this->createRepositoryInterface();
+        $phases['Commands'] = fn () => $this->createCommands();
+        $phases['Handlers'] = fn () => $this->createHandlers();
+        $phases['Repositorio (Eloquent)'] = fn () => $this->createRepositoryImplementation();
+        $phases['Excepciones'] = fn () => $this->createNotFoundException();
+        $phases['Form Requests'] = fn () => $this->createRequests();
+        $phases['Controlador'] = fn () => $this->createController();
+        $phases['Vistas Vue'] = fn () => $this->createVueFront();
+        $phases['Rutas'] = fn () => $this->createRoutesFile();
+        $phases['DataBridge (contratos)'] = fn () => $this->createDataBridge();
+        $phases['ServiceProvider'] = fn () => $this->createServiceProvider();
+        $phases['Registro en config/app.php'] = fn () => $this->registerProviderInConfig($moduleNamePlural);
+
+        if ($suitePath !== self::LOCAL_TARGET) {
+            $phases['Test (List Service)'] = function () use ($suitePath): void {
+                $this->createListServiceTest($suitePath);
+            };
+        }
 
         if ($wantSeeder) {
             $phases['Seeder (Suite)'] = function () use ($suitePath, $migrationProject, $moduleNamePlural, $tableName): void {
@@ -229,13 +255,16 @@ class MakeModuleCommand extends Command
         $this->newLine();
         $this->components->bulletList([
             "Ejecuta <fg=cyan>php artisan migrate</> para crear la tabla <fg=green>{$tableName}</>",
-            "Carga la vista en <fg=cyan>/{$moduleNamePluralLower}</>",
+            "Carga la vista en <fg=cyan>{$indexUrl}</>",
         ]);
         $this->newLine();
 
+        // ===== Pasos manuales (permisos/menú) =====
+        $this->printManualSteps();
+
         return Command::SUCCESS;
     }
-    
+
     /**
      * Registra un archivo generado (para el conteo del resumen). Sustituye a la
      * impresión inmediata de cada "Created:" para no romper la barra de progreso.
@@ -272,6 +301,48 @@ class MakeModuleCommand extends Command
         $bar->setMessage('Completado');
         $bar->finish();
         $this->newLine(2);
+    }
+
+    /**
+     * Imprime los pasos manuales para dejar el módulo operativo en la capa de
+     * permisos/menú de Suite. Solo aplica a módulos de usuario (los internos no
+     * usan Casbin ni menú lateral).
+     */
+    private function printManualSteps(): void
+    {
+        ['plural' => $plural, 'moduleCode' => $moduleCode, 'isInternal' => $isInternal,
+         'appSlug' => $appSlug, 'visibleName' => $visibleName, 'indexUrl' => $indexUrl] = $this->ctx;
+
+        if ($isInternal) {
+            $this->components->warn('Módulo interno: sin menú lateral ni permisos Casbin.');
+            $this->line('  El acceso queda restringido en el controller a la cuenta Sodeker con rol Developer.');
+            $this->line('  Se ingresa únicamente por URL: <fg=cyan>'.$indexUrl.'</>');
+            $this->newLine();
+
+            return;
+        }
+
+        $appId = self::APP_IDS[$appSlug] ?? 'N /* app_id de '.$appSlug.', ajústalo */';
+
+        $this->components->warn('PASOS MANUALES para dejar el módulo operativo (permisos + menú):');
+        $this->newLine();
+
+        $this->line("<fg=yellow>1)</> database/seeders/Landlord/TenantAppsSeeder.php");
+        $this->line("<fg=gray>   Agrega la entrada del módulo:</>");
+        $this->line("       ['uuid' => Str::ulid(), 'app_id' => {$appId}, 'code' => '{$moduleCode}', 'name' => '{$visibleName}', 'status' => 1, 'apps_required' => null],");
+        $this->newLine();
+
+        $this->line("<fg=yellow>2)</> database/seeders/Landlord/CasbinSeeders/PermissionsTableSeeder.php");
+        $this->line("<fg=gray>   Bajo el slug de la app '{$appSlug}':</>");
+        $this->line("       '{$moduleCode}' => ['view', 'edit', 'create', 'delete'],");
+        $this->newLine();
+
+        $this->line("<fg=yellow>3)</> app/Http/Support/SuiteConfigModeResolver.php  (const ROUTES)");
+        $this->line("       '{$moduleCode}' => '{$indexUrl}',");
+        $this->newLine();
+
+        $this->line("<fg=gray>Recuerda añadir '{$moduleCode}' a SUITE_MODULE_ROUTES / CHILD_APP_MODULE_ROUTES según corresponda.</>");
+        $this->newLine();
     }
 
     /**
@@ -345,24 +416,6 @@ class MakeModuleCommand extends Command
     }
 
     /**
-     * Renderiza el middleware del grupo de rutas a partir de la config. Las
-     * entradas con "(" o "::" se emiten como expresión PHP (sin comillas), el
-     * resto como string. Ej: config('jetstream.auth_session') queda crudo.
-     */
-    private function renderRouteMiddleware(): string
-    {
-        $middleware = (array) config('module-generator.route_middleware', [
-            'web', 'auth:sanctum', 'verified', 'tenant.selected', 'tenant',
-        ]);
-
-        return collect($middleware)
-            ->map(static fn (string $m): string => str_contains($m, '(') || str_contains($m, '::')
-                ? $m
-                : "'{$m}'")
-            ->implode(', ');
-    }
-
-    /**
      * Lista las carpetas de proyecto existentes bajo $tenantDir y deja elegir
      * una, o "otro" para crear un proyecto nuevo (cuyo nombre se solicita).
      */
@@ -375,7 +428,7 @@ class MakeModuleCommand extends Command
             ->all();
 
         $options = array_merge($projects, ['otro']);
-        $default = in_array('iris', $projects, true) ? 'iris' : ($options[0] ?? 'otro');
+        $default = in_array('shared', $projects, true) ? 'shared' : ($options[0] ?? 'otro');
 
         $choice = $this->choice("Seleccione el proyecto de {$tipo}", $options, $default);
 
@@ -409,8 +462,13 @@ class MakeModuleCommand extends Command
     {
         File::ensureDirectoryExists($dir);
 
+        $hasCode = (bool) ($this->ctx['hasCode'] ?? true);
         $timestamp = date('Y_m_d_His');
         $fileName = "{$timestamp}_create_table_{$tableName}.php";
+
+        $codeLine = $hasCode
+            ? "            \$table->char('code', 10)->unique();\n"
+            : '';
 
         $content = <<<PHP
 <?php
@@ -429,9 +487,10 @@ return new class extends Migration
         Schema::create('{$tableName}', function (Blueprint \$table) {
             \$table->id();
             \$table->char('uuid', 26)->unique();
-            \$table->string('description')->nullable();
-            \$table->foreignId('created_by')->nullable();
-            \$table->foreignId('updated_by')->nullable();
+{$codeLine}            \$table->string('description')->nullable();
+            \$table->char('status', 1)->default('1')->comment('1: Activo, 0: Inactivo');
+            \$table->char('created_by', 26)->nullable();
+            \$table->char('updated_by', 26)->nullable();
             \$table->timestamps();
             \$table->softDeletes();
         });
@@ -465,8 +524,15 @@ PHP;
         $dir = "{$suitePath}/database/seeders/tenant/{$project}";
         File::ensureDirectoryExists($dir);
 
+        $hasCode = (bool) ($this->ctx['hasCode'] ?? true);
         $seederClass = "{$moduleNamePlural}Seeder";
         $namespace = 'Database\\Seeders\\Tenant\\'.Str::studly($project);
+
+        $sampleRow = $hasCode
+            ? "            // ['code' => 'EJ', 'description' => 'Ejemplo'],"
+            : "            // ['description' => 'Ejemplo'],";
+        $matchKey = $hasCode ? 'code' : 'description';
+        $codeInsert = $hasCode ? "                    'code' => \$row['code'],\n" : '';
 
         $content = <<<PHP
 <?php
@@ -485,19 +551,20 @@ class {$seederClass} extends Seeder
         \$systemUser = '1';
 
         \$rows = [
-            // ['description' => 'Ejemplo'],
+{$sampleRow}
         ];
 
         foreach (\$rows as \$row) {
             \$existing = DB::table('{$tableName}')
-                ->where('description', \$row['description'])
+                ->where('{$matchKey}', \$row['{$matchKey}'])
                 ->first();
 
             DB::table('{$tableName}')->updateOrInsert(
-                ['description' => \$row['description']],
+                ['{$matchKey}' => \$row['{$matchKey}']],
                 [
                     'uuid' => \$existing->uuid ?? (string) Str::ulid(),
-                    'description' => \$row['description'],
+{$codeInsert}                    'description' => \$row['description'] ?? null,
+                    'status' => '1',
                     'created_by' => \$systemUser,
                     'updated_by' => \$systemUser,
                     'created_at' => \$existing->created_at ?? \$now,
@@ -514,83 +581,161 @@ PHP;
     }
 
     /**
-     * Create Eloquent Model from template
+     * Value Object del estado (enum backed string 1/0).
      */
-    private function createModel(
-        string $modelsPath,
-        string $moduleNamePlural,
-        string $moduleNameSingular,
-        string $tableName
-    ): void {
-        $connectionLine = $this->connection !== null
-            ? "\n    protected \$connection = '{$this->connection}';"
-            : '';
+    private function createStatusValueObject(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $basePath */
+
+        $path = "{$basePath}/Domain/ValueObjects";
+        File::ensureDirectoryExists($path);
+        $class = "{$singular}Status";
 
         $content = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Database\\Models;
+namespace {$ns}\\{$plural}\\Domain\\ValueObjects;
+
+enum {$class}: string
+{
+    case Active = '1';
+    case Inactive = '0';
+
+    public static function fromMixed(mixed \$value): self
+    {
+        if (\$value instanceof self) {
+            return \$value;
+        }
+
+        if (is_string(\$value)) {
+            \$normalized = strtolower(trim(\$value));
+            return in_array(\$normalized, ['1'], true)
+                ? self::Active
+                : self::Inactive;
+        }
+
+        if (is_bool(\$value)) {
+            return \$value ? self::Active : self::Inactive;
+        }
+
+        if (is_int(\$value) || is_float(\$value)) {
+            return ((int) \$value) === 1 ? self::Active : self::Inactive;
+        }
+
+        return filter_var(\$value, FILTER_VALIDATE_BOOLEAN) ? self::Active : self::Inactive;
+    }
+
+    public function description(): string
+    {
+        return match (\$this) {
+            self::Active => 'ACTIVO',
+            self::Inactive => 'INACTIVO',
+        };
+    }
+
+    public function toBool(): bool
+    {
+        return \$this === self::Active;
+    }
+}
+PHP;
+
+        File::put("{$path}/{$class}.php", $content);
+        $this->recordCreated("Domain/ValueObjects/{$class}.php");
+    }
+
+    /**
+     * Create Eloquent Model from template
+     */
+    private function createModel(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $table @var string $basePath @var bool $hasCode */
+
+        $path = "{$basePath}/Infrastructure/Database/Models";
+        File::ensureDirectoryExists($path);
+
+        $connectionLine = $connection !== null
+            ? "\n    protected \$connection = '{$connection}';"
+            : '';
+        $codeFillable = $hasCode ? "        'code',\n" : '';
+
+        $content = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Infrastructure\\Database\\Models;
 
 use Illuminate\\Database\\Eloquent\\Model;
 use Illuminate\\Database\\Eloquent\\SoftDeletes;
 
-/**
- * @group {$moduleNamePlural}
- *
- * Modelo para la tabla de {$moduleNamePlural}
- */
-class {$moduleNameSingular} extends Model
+class {$singular} extends Model
 {
     use SoftDeletes;
 
-    protected \$table = '{$tableName}';{$connectionLine}
+    protected \$table = '{$table}';{$connectionLine}
     public \$incrementing = true;
     protected \$keyType = 'int';
 
     protected \$fillable = [
         'id',
         'uuid',
-        'description',
+{$codeFillable}        'description',
+        'status',
         'created_by',
         'updated_by',
-        'created_at',
-        'updated_at',
-        'deleted_at',
     ];
 }
 PHP;
 
-        File::put("{$modelsPath}/{$moduleNameSingular}.php", $content);
-        $this->recordCreated("Infrastructure/Database/Models/{$moduleNameSingular}.php");
+        File::put("{$path}/{$singular}.php", $content);
+        $this->recordCreated("Infrastructure/Database/Models/{$singular}.php");
     }
 
     /**
      * Create Domain Entity from template
      */
-    private function createDomainEntity(
-        string $entitiesPath,
-        string $moduleNamePlural,
-        string $moduleNameSingular
-    ): void {
+    private function createDomainEntity(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $basePath @var bool $hasCode */
+
+        $path = "{$basePath}/Domain/Entities";
+        File::ensureDirectoryExists($path);
+        $statusVo = "{$singular}Status";
+
+        // Fragmentos condicionales para "code".
+        $codeCtorProp = $hasCode ? "        private string \$code,\n" : '';
+        $codeCreateParam = $hasCode ? "        string \$code,\n" : '';
+        $codeCreateAssign = $hasCode ? "            code: \$code,\n" : '';
+        $codeUpdateParam = $hasCode ? 'string $code, ' : '';
+        $codeUpdateAssign = $hasCode ? "        \$this->code = \$code;\n" : '';
+        $codeGetter = $hasCode ? "    public function code(): string { return \$this->code; }\n" : '';
+
         $content = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Entities;
+namespace {$ns}\\{$plural}\\Domain\\Entities;
 
+use {$ns}\\{$plural}\\Domain\\ValueObjects\\{$statusVo};
 use DateTimeImmutable;
+use Illuminate\\Support\\Str;
 
-final class {$moduleNameSingular}
+final class {$singular}
 {
     public function __construct(
         private ?int \$id,
         private string \$uuid,
-        private ?string \$description,
+{$codeCtorProp}        private ?string \$description,
+        private {$statusVo} \$status,
         private string \$createdBy,
-        private ?string \$updatedBy,
+        private string \$updatedBy,
         private DateTimeImmutable \$createdAt,
         private ?DateTimeImmutable \$updatedAt,
         private ?DateTimeImmutable \$deletedAt = null,
@@ -598,151 +743,194 @@ final class {$moduleNameSingular}
 
     public static function create(
         ?int \$id,
-        string \$uuid,
-        ?string \$description,
+{$codeCreateParam}        ?string \$description,
+        {$statusVo} \$status,
         string \$createdBy,
-        ?string \$updatedBy = null,
-        ?DateTimeImmutable \$updatedAt = null,
+        string \$updatedBy,
     ): self {
         return new self(
             id: \$id,
-            uuid: \$uuid,
-            description: \$description,
+            uuid: (string) Str::ulid(),
+{$codeCreateAssign}            description: \$description,
+            status: \$status,
             createdBy: \$createdBy,
-            createdAt: new DateTimeImmutable(),
             updatedBy: \$updatedBy,
-            updatedAt: \$updatedAt,
+            createdAt: new DateTimeImmutable(),
+            updatedAt: new DateTimeImmutable(),
         );
     }
 
-    public function update(
-        ?string \$description,
-        string \$updatedBy,
-    ): void {
-        \$this->description = \$description;
+    public function update({$codeUpdateParam}?string \$description, {$statusVo} \$status, string \$updatedBy): void
+    {
+{$codeUpdateAssign}        \$this->description = \$description;
+        \$this->status = \$status;
         \$this->updatedBy = \$updatedBy;
         \$this->updatedAt = new DateTimeImmutable();
     }
 
+    public function delete(): void
+    {
+        \$this->deletedAt = new DateTimeImmutable();
+    }
+
     public function id(): ?int { return \$this->id; }
     public function uuid(): string { return \$this->uuid; }
-    public function description(): ?string { return \$this->description; }
+{$codeGetter}    public function description(): ?string { return \$this->description; }
+    public function status(): {$statusVo} { return \$this->status; }
     public function createdBy(): string { return \$this->createdBy; }
-    public function updatedBy(): ?string { return \$this->updatedBy; }
+    public function updatedBy(): string { return \$this->updatedBy; }
     public function createdAt(): DateTimeImmutable { return \$this->createdAt; }
     public function updatedAt(): ?DateTimeImmutable { return \$this->updatedAt; }
     public function deletedAt(): ?DateTimeImmutable { return \$this->deletedAt; }
 }
 PHP;
 
-        File::put("{$entitiesPath}/{$moduleNameSingular}.php", $content);
-        $this->recordCreated("Domain/Entities/{$moduleNameSingular}.php");
+        File::put("{$path}/{$singular}.php", $content);
+        $this->recordCreated("Domain/Entities/{$singular}.php");
     }
 
     /**
-     * Create DTO from template
+     * Create DTOs (DTO, SaveDTO, CollectionDTO)
      */
-    private function createDto(
-        string $dtosPath,
-        string $moduleNamePlural,
-        string $moduleNameSingular
-    ): void {
-        $content = <<<PHP
+    private function createDtos(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $basePath @var bool $hasCode */
+
+        $path = "{$basePath}/Application/DTOs";
+        File::ensureDirectoryExists($path);
+        $statusVo = "{$singular}Status";
+
+        $codeProp = $hasCode ? "        public string \$code,\n" : '';
+        $codeAssign = $hasCode ? "            code: \${$singularCamel}->code(),\n" : '';
+        $codeArray = $hasCode ? "            'code' => \$this->code,\n" : '';
+        $codeCollArray = $hasCode ? "                    'code' => \$dto->code,\n" : '';
+
+        // ===== DTO =====
+        $dto = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\DTOs;
+namespace {$ns}\\{$plural}\\Application\\DTOs;
 
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Entities\\{$moduleNameSingular};
-use DateTimeImmutable;
+use {$ns}\\{$plural}\\Domain\\Entities\\{$singular};
+use {$ns}\\{$plural}\\Domain\\ValueObjects\\{$statusVo};
 
-final class {$moduleNameSingular}DTO
+final class {$singular}DTO
 {
     public function __construct(
         public ?int \$id,
         public string \$uuid,
-        public ?string \$description,
-        public string \$createdBy,
-        public ?string \$updatedBy,
-        public DateTimeImmutable \$createdAt,
-        public ?DateTimeImmutable \$updatedAt,
-        public ?DateTimeImmutable \$deletedAt,
+{$codeProp}        public ?string \$description,
+        public {$statusVo} \$status,
     ) {}
 
-    public static function fromDomain({$moduleNameSingular} \$entity): self
+    public static function fromDomain({$singular} \${$singularCamel}): self
     {
         return new self(
-            id: \$entity->id(),
-            uuid: \$entity->uuid(),
-            description: \$entity->description(),
-            createdBy: \$entity->createdBy(),
-            updatedBy: \$entity->updatedBy(),
-            createdAt: \$entity->createdAt(),
-            updatedAt: \$entity->updatedAt(),
-            deletedAt: \$entity->deletedAt(),
+            id: \${$singularCamel}->id(),
+            uuid: \${$singularCamel}->uuid(),
+{$codeAssign}            description: \${$singularCamel}->description(),
+            status: \${$singularCamel}->status(),
         );
     }
 
-    /**
-     * Representación lista para el frontend (snake_case + fechas formateadas).
-     *
-     * @return array<string, mixed>
-     */
     public function toArray(): array
     {
         return [
             'id' => \$this->id,
             'uuid' => \$this->uuid,
-            'description' => \$this->description,
-            'created_by' => \$this->createdBy,
-            'updated_by' => \$this->updatedBy,
-            'created_at' => \$this->createdAt->format('Y-m-d H:i:s'),
-            'updated_at' => \$this->updatedAt?->format('Y-m-d H:i:s'),
-            'deleted_at' => \$this->deletedAt?->format('Y-m-d H:i:s'),
+{$codeArray}            'description' => \$this->description,
+            'status' => \$this->status->value,
         ];
     }
 }
 PHP;
+        File::put("{$path}/{$singular}DTO.php", $dto);
+        $this->recordCreated("Application/DTOs/{$singular}DTO.php");
 
-        File::put("{$dtosPath}/{$moduleNameSingular}DTO.php", $content);
-        $this->recordCreated("Application/DTOs/{$moduleNameSingular}DTO.php");
-    }
-
-    /**
-     * Create Collection DTO from template
-     */
-    private function createCollectionDto(
-        string $dtosPath,
-        string $moduleNamePlural,
-        string $moduleNameSingular
-    ): void {
-        $content = <<<PHP
+        // ===== SaveDTO =====
+        $save = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\DTOs;
+namespace {$ns}\\{$plural}\\Application\\DTOs;
 
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Entities\\{$moduleNameSingular};
+use {$ns}\\{$plural}\\Domain\\Entities\\{$singular};
+use {$ns}\\{$plural}\\Domain\\ValueObjects\\{$statusVo};
 
-final class {$moduleNameSingular}CollectionDTO
+final class Save{$singular}DTO
+{
+    public function __construct(
+        public ?int \$id,
+        public string \$uuid,
+{$codeProp}        public ?string \$description,
+        public {$statusVo} \$status,
+        public string \$createdBy,
+        public string \$updatedBy,
+    ) {}
+
+    public static function fromDomain({$singular} \${$singularCamel}): self
+    {
+        return new self(
+            id: \${$singularCamel}->id(),
+            uuid: \${$singularCamel}->uuid(),
+{$codeAssign}            description: \${$singularCamel}->description(),
+            status: \${$singularCamel}->status(),
+            createdBy: \${$singularCamel}->createdBy(),
+            updatedBy: \${$singularCamel}->updatedBy(),
+        );
+    }
+
+    public function toArray(): array
+    {
+        return [
+            'id' => \$this->id,
+            'uuid' => \$this->uuid,
+{$codeArray}            'description' => \$this->description,
+            'status' => \$this->status->value,
+            'createdBy' => \$this->createdBy,
+            'updatedBy' => \$this->updatedBy,
+        ];
+    }
+}
+PHP;
+        File::put("{$path}/Save{$singular}DTO.php", $save);
+        $this->recordCreated("Application/DTOs/Save{$singular}DTO.php");
+
+        // ===== CollectionDTO =====
+        $collection = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Application\\DTOs;
+
+use {$ns}\\{$plural}\\Domain\\Entities\\{$singular};
+
+final class {$singular}CollectionDTO
 {
     public function __construct(
         public array \$items,
         public int \$total,
+        public int \$page,
+        public int \$perPage,
     ) {}
 
-    public static function fromDomain(array \$entities, int \$total): self
+    public static function fromDomain(array \$entities, int \$total, int \$page = 1, int \$perPage = 15): self
     {
         \$items = array_map(
-            fn({$moduleNameSingular} \$entity) => {$moduleNameSingular}DTO::fromDomain(\$entity),
+            fn ({$singular} \${$singularCamel}) => {$singular}DTO::fromDomain(\${$singularCamel}),
             \$entities
         );
 
         return new self(
             items: \$items,
             total: \$total,
+            page: \$page,
+            perPage: \$perPage,
         );
     }
 
@@ -750,306 +938,1255 @@ final class {$moduleNameSingular}CollectionDTO
     {
         return [
             'data' => array_map(
-                fn({$moduleNameSingular}DTO \$dto) => \$dto->toArray(),
+                fn ({$singular}DTO \$dto) => [
+                    'id' => \$dto->id,
+                    'uuid' => \$dto->uuid,
+{$codeCollArray}                    'description' => \$dto->description,
+                    'status' => \$dto->status->value,
+                ],
                 \$this->items
             ),
             'meta' => [
                 'total' => \$this->total,
+                'page' => \$this->page,
+                'per_page' => \$this->perPage,
+                'last_page' => (int) ceil(\$this->total / max(1, \$this->perPage)),
             ],
         ];
     }
 }
 PHP;
+        File::put("{$path}/{$singular}CollectionDTO.php", $collection);
+        $this->recordCreated("Application/DTOs/{$singular}CollectionDTO.php");
+    }
 
-        File::put("{$dtosPath}/{$moduleNameSingular}CollectionDTO.php", $content);
-        $this->recordCreated("Application/DTOs/{$moduleNameSingular}CollectionDTO.php");
+    /**
+     * Create Repository Interface
+     */
+    private function createRepositoryInterface(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $basePath @var bool $hasCode */
+
+        $path = "{$basePath}/Domain/Repositories";
+        File::ensureDirectoryExists($path);
+        $interfaceName = "{$singular}RepositoryInterface";
+        $entityAlias = "{$singular}Entity";
+
+        $codeExists = $hasCode
+            ? "\n    public function codeExists(string \$code, ?string \$excludeUuid = null): bool;\n"
+            : '';
+
+        $content = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Domain\\Repositories;
+
+use {$ns}\\{$plural}\\Domain\\Entities\\{$singular} as {$entityAlias};
+
+interface {$interfaceName}
+{
+    public function findByUuid(string \$uuid): ?{$entityAlias};
+
+    public function findAll(): array;
+
+    public function list(): array;
+
+    public function save({$entityAlias} \${$singularCamel}): {$entityAlias};
+{$codeExists}
+    public function update({$entityAlias} \${$singularCamel}): void;
+
+    public function delete(string \$uuid): void;
+}
+PHP;
+
+        File::put("{$path}/{$interfaceName}.php", $content);
+        $this->recordCreated("Domain/Repositories/{$interfaceName}.php");
     }
 
     /**
      * Create Commands (Create, Update, Delete) from templates
      */
-    private function createCommands(
-        string $commandsPath,
-        string $moduleNamePlural,
-        string $moduleNameSingular
-    ): void {
+    private function createCommands(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $basePath @var bool $hasCode */
+
+        $path = "{$basePath}/Application/Commands";
+        File::ensureDirectoryExists($path);
+
+        $codeCreate = $hasCode ? "        public string \$code,\n" : '';
+        $codeUpdate = $hasCode ? "        public string \$code,\n" : '';
+
         // Create
-        $createContent = <<<PHP
+        $create = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Commands;
+namespace {$ns}\\{$plural}\\Application\\Commands;
 
-final class Create{$moduleNameSingular}Command
+final class Create{$singular}Command
 {
     public function __construct(
-        public ?string \$description,
+{$codeCreate}        public ?string \$description,
+        public bool \$status,
         public string \$createdBy,
-        public ?string \$updatedBy = null,
-    ) {}
-}
-PHP;
-        File::put("{$commandsPath}/Create{$moduleNameSingular}Command.php", $createContent);
-        $this->recordCreated("Application/Commands/Create{$moduleNameSingular}Command.php");
-
-        // Update
-        $updateContent = <<<PHP
-<?php
-
-declare(strict_types=1);
-
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Commands;
-
-final class Update{$moduleNameSingular}Command
-{
-    public function __construct(
-        public string \$uuid,
-        public ?string \$description,
         public string \$updatedBy,
     ) {}
 }
 PHP;
-        File::put("{$commandsPath}/Update{$moduleNameSingular}Command.php", $updateContent);
-        $this->recordCreated("Application/Commands/Update{$moduleNameSingular}Command.php");
+        File::put("{$path}/Create{$singular}Command.php", $create);
+        $this->recordCreated("Application/Commands/Create{$singular}Command.php");
 
-        // Delete
-        $deleteContent = <<<PHP
+        // Update
+        $update = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Commands;
+namespace {$ns}\\{$plural}\\Application\\Commands;
 
-final class Delete{$moduleNameSingular}Command
+final class Update{$singular}Command
+{
+    public function __construct(
+        public string \$uuid,
+{$codeUpdate}        public ?string \$description,
+        public ?string \$status,
+        public ?string \$actorId,
+    ) {}
+}
+PHP;
+        File::put("{$path}/Update{$singular}Command.php", $update);
+        $this->recordCreated("Application/Commands/Update{$singular}Command.php");
+
+        // Delete
+        $delete = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Application\\Commands;
+
+final class Delete{$singular}Command
 {
     public function __construct(
         public string \$uuid,
     ) {}
 }
 PHP;
-        File::put("{$commandsPath}/Delete{$moduleNameSingular}Command.php", $deleteContent);
-        $this->recordCreated("Application/Commands/Delete{$moduleNameSingular}Command.php");
+        File::put("{$path}/Delete{$singular}Command.php", $delete);
+        $this->recordCreated("Application/Commands/Delete{$singular}Command.php");
     }
 
     /**
-     * Create Handlers (Create, List, Update) from templates
+     * Create Handlers (Create, List, Update, Get, Delete, [ValidateCode])
      */
-    private function createHandlers(
-        string $handlersPath,
-        string $moduleNamePlural,
-        string $moduleNameSingular
-    ): void {
+    private function createHandlers(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $basePath @var bool $hasCode */
+
+        $path = "{$basePath}/Application/Handlers";
+        File::ensureDirectoryExists($path);
+        $statusVo = "{$singular}Status";
+        $repoInterface = "{$singular}RepositoryInterface";
+        $codeCreateAssign = $hasCode ? "            code: \$c->code,\n" : '';
+        $codeUpdateAssign = $hasCode ? "            code: \$c->code,\n" : '';
+
         // Create
-        $createContent = <<<PHP
+        $create = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Handlers;
+namespace {$ns}\\{$plural}\\Application\\Handlers;
 
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Commands\\Create{$moduleNameSingular}Command;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\DTOs\\{$moduleNameSingular}DTO;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories\\{$moduleNameSingular}RepositoryInterface;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Entities\\{$moduleNameSingular};
-use Illuminate\\Support\\Str;
+use {$ns}\\{$plural}\\Application\\Commands\\Create{$singular}Command;
+use {$ns}\\{$plural}\\Application\\DTOs\\Save{$singular}DTO;
+use {$ns}\\{$plural}\\Domain\\Repositories\\{$repoInterface};
+use {$ns}\\{$plural}\\Domain\\ValueObjects\\{$statusVo};
+use {$ns}\\{$plural}\\Domain\\Entities\\{$singular};
 
-final class Create{$moduleNameSingular}Handler
+final class Create{$singular}Handler
 {
     public function __construct(
-        private {$moduleNameSingular}RepositoryInterface \$repo,
+        private {$repoInterface} \$repo,
     ) {}
 
-    public function handle(Create{$moduleNameSingular}Command \$c): {$moduleNameSingular}DTO
+    public function handle(Create{$singular}Command \$c): Save{$singular}DTO
     {
-        \$entity = {$moduleNameSingular}::create(
+        \${$singularCamel} = {$singular}::create(
             id: null,
-            uuid: (string) Str::ulid(),
-            description: \$c->description,
+{$codeCreateAssign}            description: \$c->description,
+            status: {$statusVo}::fromMixed(\$c->status),
             createdBy: \$c->createdBy,
             updatedBy: \$c->updatedBy,
-            updatedAt: null,
         );
+        \$saved = \$this->repo->save(\${$singularCamel});
 
-        return {$moduleNameSingular}DTO::fromDomain(\$this->repo->save(\$entity));
+        return Save{$singular}DTO::fromDomain(\$saved);
     }
 }
 PHP;
-        File::put("{$handlersPath}/Create{$moduleNameSingular}Handler.php", $createContent);
-        $this->recordCreated("Application/Handlers/Create{$moduleNameSingular}Handler.php");
+        File::put("{$path}/Create{$singular}Handler.php", $create);
+        $this->recordCreated("Application/Handlers/Create{$singular}Handler.php");
 
         // List
-        $listContent = <<<PHP
+        $list = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Handlers;
+namespace {$ns}\\{$plural}\\Application\\Handlers;
 
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\DTOs\\{$moduleNameSingular}CollectionDTO;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories\\{$moduleNameSingular}RepositoryInterface;
+use {$ns}\\{$plural}\\Application\\DTOs\\{$singular}CollectionDTO;
+use {$ns}\\{$plural}\\Domain\\Repositories\\{$repoInterface};
 
-/**
- * @group {$moduleNamePlural}
- *
- * Handler para la lista de {$moduleNamePlural}
- */
-final class List{$moduleNamePlural}Handler
+final class List{$plural}Handler
 {
-    public function __construct(
-        private {$moduleNameSingular}RepositoryInterface \$repo,
-    ) {}
+    public function __construct(private {$repoInterface} \$repo) {}
 
-    public function handle(array \$filters = []): {$moduleNameSingular}CollectionDTO
+    public function handle(array \$filters, int \$page, int \$perPage): {$singular}CollectionDTO
     {
-        \$result = \$this->repo->list(\$filters);
+        \$result = \$this->repo->list();
 
-        return {$moduleNameSingular}CollectionDTO::fromDomain(
-            \$result['data'] ?? [],
-            \$result['total'] ?? 0,
+        return {$singular}CollectionDTO::fromDomain(
+            entities: \$result['data'],
+            total: \$result['total'],
+            page: \$page,
+            perPage: \$perPage,
         );
     }
 }
 PHP;
-        File::put("{$handlersPath}/List{$moduleNamePlural}Handler.php", $listContent);
-        $this->recordCreated("Application/Handlers/List{$moduleNamePlural}Handler.php");
+        File::put("{$path}/List{$plural}Handler.php", $list);
+        $this->recordCreated("Application/Handlers/List{$plural}Handler.php");
 
         // Update
-        $updateContent = <<<PHP
+        $update = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Handlers;
+namespace {$ns}\\{$plural}\\Application\\Handlers;
 
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Commands\\Update{$moduleNameSingular}Command;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\DTOs\\{$moduleNameSingular}DTO;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories\\{$moduleNameSingular}RepositoryInterface;
+use {$ns}\\{$plural}\\Application\\Commands\\Update{$singular}Command;
+use {$ns}\\{$plural}\\Application\\DTOs\\{$singular}DTO;
+use {$ns}\\{$plural}\\Domain\\Repositories\\{$repoInterface};
+use {$ns}\\{$plural}\\Domain\\Exceptions\\{$singular}NotFoundException;
+use {$ns}\\{$plural}\\Domain\\ValueObjects\\{$statusVo};
 
-final class Update{$moduleNameSingular}Handler
+final class Update{$singular}Handler
 {
-    public function __construct(
-        private {$moduleNameSingular}RepositoryInterface \$repo,
-    ) {}
+    public function __construct(private {$repoInterface} \$repo) {}
 
-    public function handle(Update{$moduleNameSingular}Command \$command): {$moduleNameSingular}DTO
+    public function handle(Update{$singular}Command \$c): {$singular}DTO
     {
-        \$entity = \$this->repo->findByUuid(\$command->uuid);
+        \${$singularCamel} = \$this->repo->findByUuid(\$c->uuid);
+        if (! \${$singularCamel}) {
+            throw {$singular}NotFoundException::withUuid(\$c->uuid);
+        }
 
-        \$entity->update(
-            description: \$command->description,
-            updatedBy: \$command->updatedBy,
+        \${$singularCamel}->update(
+{$codeUpdateAssign}            description: \$c->description,
+            status: {$statusVo}::from(\$c->status),
+            updatedBy: \$c->actorId,
         );
 
-        \$this->repo->update(\$entity);
+        \$this->repo->update(\${$singularCamel});
 
-        \$fresh = \$this->repo->findByUuid(\$command->uuid);
-
-        return {$moduleNameSingular}DTO::fromDomain(\$fresh);
+        return {$singular}DTO::fromDomain(\${$singularCamel});
     }
 }
 PHP;
-        File::put("{$handlersPath}/Update{$moduleNameSingular}Handler.php", $updateContent);
-        $this->recordCreated("Application/Handlers/Update{$moduleNameSingular}Handler.php");
+        File::put("{$path}/Update{$singular}Handler.php", $update);
+        $this->recordCreated("Application/Handlers/Update{$singular}Handler.php");
 
         // Get by UUID
-        $getContent = <<<PHP
+        $get = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Handlers;
+namespace {$ns}\\{$plural}\\Application\\Handlers;
 
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\DTOs\\{$moduleNameSingular}DTO;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories\\{$moduleNameSingular}RepositoryInterface;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Exceptions\\{$moduleNameSingular}NotFoundException;
+use {$ns}\\{$plural}\\Application\\DTOs\\{$singular}DTO;
+use {$ns}\\{$plural}\\Domain\\Repositories\\{$repoInterface};
+use {$ns}\\{$plural}\\Domain\\Exceptions\\{$singular}NotFoundException;
 
-final class Get{$moduleNameSingular}ByUuidHandler
+final class Get{$singular}ByUuidHandler
 {
     public function __construct(
-        private {$moduleNameSingular}RepositoryInterface \$repo,
+        private {$repoInterface} \$repo,
     ) {}
 
-    public function handle(string \$uuid): {$moduleNameSingular}DTO
+    public function handle(string \$uuid): {$singular}DTO
     {
         \$entity = \$this->repo->findByUuid(\$uuid);
 
         if (\$entity === null) {
-            throw {$moduleNameSingular}NotFoundException::withUuid(\$uuid);
+            throw {$singular}NotFoundException::withUuid(\$uuid);
         }
 
-        return {$moduleNameSingular}DTO::fromDomain(\$entity);
+        return {$singular}DTO::fromDomain(\$entity);
     }
 }
 PHP;
-        File::put("{$handlersPath}/Get{$moduleNameSingular}ByUuidHandler.php", $getContent);
-        $this->recordCreated("Application/Handlers/Get{$moduleNameSingular}ByUuidHandler.php");
+        File::put("{$path}/Get{$singular}ByUuidHandler.php", $get);
+        $this->recordCreated("Application/Handlers/Get{$singular}ByUuidHandler.php");
 
         // Delete
-        $deleteContent = <<<PHP
+        $delete = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Handlers;
+namespace {$ns}\\{$plural}\\Application\\Handlers;
 
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Commands\\Delete{$moduleNameSingular}Command;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories\\{$moduleNameSingular}RepositoryInterface;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Exceptions\\{$moduleNameSingular}NotFoundException;
+use {$ns}\\{$plural}\\Application\\Commands\\Delete{$singular}Command;
+use {$ns}\\{$plural}\\Domain\\Repositories\\{$repoInterface};
 
-final class Delete{$moduleNameSingular}Handler
+final class Delete{$singular}Handler
 {
-    public function __construct(
-        private {$moduleNameSingular}RepositoryInterface \$repo,
-    ) {}
+    public function __construct(private {$repoInterface} \$repo) {}
 
-    public function handle(Delete{$moduleNameSingular}Command \$command): void
+    public function handle(Delete{$singular}Command \$c): void
     {
-        \$entity = \$this->repo->findByUuid(\$command->uuid);
-
-        if (\$entity === null) {
-            throw {$moduleNameSingular}NotFoundException::withUuid(\$command->uuid);
-        }
-
-        \$this->repo->delete((string) \$entity->id());
+        \$this->repo->delete(\$c->uuid);
     }
 }
 PHP;
-        File::put("{$handlersPath}/Delete{$moduleNameSingular}Handler.php", $deleteContent);
-        $this->recordCreated("Application/Handlers/Delete{$moduleNameSingular}Handler.php");
+        File::put("{$path}/Delete{$singular}Handler.php", $delete);
+        $this->recordCreated("Application/Handlers/Delete{$singular}Handler.php");
+
+        // ValidateCode (solo si hay code)
+        if ($hasCode) {
+            $validate = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Application\\Handlers;
+
+use {$ns}\\{$plural}\\Domain\\Repositories\\{$repoInterface};
+
+final class Validate{$singular}CodeHandler
+{
+    public function __construct(private {$repoInterface} \$repo) {}
+
+    public function handle(string \$code, ?string \$excludeUuid = null): bool
+    {
+        return \$this->repo->codeExists(\$code, \$excludeUuid);
+    }
+}
+PHP;
+            File::put("{$path}/Validate{$singular}CodeHandler.php", $validate);
+            $this->recordCreated("Application/Handlers/Validate{$singular}CodeHandler.php");
+        }
     }
 
     /**
-     * Create Vue front pages (Index, Create, Edit, Show) from templates
+     * Create Repository Implementation
      */
-    private function createVueFront(
-        string $moduleNamePlural,
-        string $moduleNamePluralLower,
-        string $moduleNameSingularLower
-    ): void {
-        $pagesPath = resource_path("js/{$this->pagesPath}/{$moduleNamePlural}");
-        if (!File::exists($pagesPath)) {
-            File::makeDirectory($pagesPath, 0755, true);
+    private function createRepositoryImplementation(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $basePath @var bool $hasCode */
+
+        $path = "{$basePath}/Infrastructure/Database/Repositories";
+        File::ensureDirectoryExists($path);
+        $repositoryName = "Eloquent{$singular}Repository";
+        $interfaceName = "{$singular}RepositoryInterface";
+        $entityAlias = "{$singular}Entity";
+        $statusVo = "{$singular}Status";
+
+        $codeSave = $hasCode ? "            \$model->code = \${$singularCamel}->code();\n" : '';
+        $codeUpdate = $hasCode ? "            \$m->code = \${$singularCamel}->code();\n" : '';
+        $codeToDomain = $hasCode ? "            code: \$m->code,\n" : '';
+        $searchColumn = $hasCode ? 'code' : 'description';
+
+        $codeExistsMethod = $hasCode ? <<<PHP
+
+    public function codeExists(string \$code, ?string \$excludeUuid = null): bool
+    {
+        \$normalized = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', trim(\$code)));
+        \$query = {$singular}::query()
+            ->whereRaw('TRIM(code) = ?', [\$normalized])
+            ->whereNull('deleted_at');
+        if (! empty(\$excludeUuid)) {
+            \$query->where('uuid', '!=', \$excludeUuid);
         }
-        $this->recordCreated("resources/js/Pages/{$moduleNamePlural}");
 
-        $plural = $moduleNamePlural;
-        $pluralLower = $moduleNamePluralLower;
-        $singularLower = $moduleNameSingularLower;
-        $editProp = "{$singularLower}Edit";
-        $showProp = $singularLower;
+        return \$query->exists();
+    }
 
-        // ===== Index.vue =====
-        $indexContent = <<<VUE
+PHP : "\n";
+
+        $content = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Infrastructure\\Database\\Repositories;
+
+use Illuminate\\Support\\Facades\\DB;
+
+use {$ns}\\{$plural}\\Domain\\Repositories\\{$interfaceName};
+use {$ns}\\{$plural}\\Domain\\Entities\\{$singular} as {$entityAlias};
+use {$ns}\\{$plural}\\Domain\\ValueObjects\\{$statusVo};
+use {$ns}\\{$plural}\\Infrastructure\\Database\\Models\\{$singular};
+
+class {$repositoryName} implements {$interfaceName}
+{
+    public function findByUuid(string \$uuid): ?{$entityAlias}
+    {
+        \$model = {$singular}::where('uuid', \$uuid)->first();
+
+        if (! \$model) {
+            return null;
+        }
+
+        return \$this->toDomain(\$model);
+    }
+
+    public function findAll(): array
+    {
+        return {$singular}::all()
+            ->map(fn (\$model) => \$this->toDomain(\$model))
+            ->toArray();
+    }
+
+    public function list(): array
+    {
+        \$items = {$singular}::all()->map(fn (\$m) => \$this->toDomain(\$m))->all();
+        \$total = {$singular}::count();
+
+        return [
+            'data' => \$items,
+            'total' => \$total,
+        ];
+    }
+
+    public function save({$entityAlias} \${$singularCamel}): {$entityAlias}
+    {
+        return DB::transaction(function () use (\${$singularCamel}) {
+            \$model = new {$singular}();
+            \$model->uuid = \${$singularCamel}->uuid();
+{$codeSave}            \$model->description = \${$singularCamel}->description();
+            \$model->status = \${$singularCamel}->status()->value;
+            \$model->created_by = \${$singularCamel}->createdBy();
+            \$model->updated_by = \${$singularCamel}->updatedBy();
+            \$model->created_at = now();
+            \$model->updated_at = now();
+            \$model->save();
+            \$model->refresh();
+
+            return \$this->toDomain(\$model);
+        });
+    }
+{$codeExistsMethod}
+    public function update({$entityAlias} \${$singularCamel}): void
+    {
+        \$m = {$singular}::where('uuid', \${$singularCamel}->uuid())->first();
+        if (\$m) {
+{$codeUpdate}            \$m->description = \${$singularCamel}->description();
+            \$m->status = \${$singularCamel}->status()->value;
+            \$m->updated_by = \${$singularCamel}->updatedBy();
+            \$m->updated_at = now();
+            \$m->save();
+        }
+    }
+
+    public function delete(string \$uuid): void
+    {
+        {$singular}::where('uuid', \$uuid)->delete();
+    }
+
+    private function toDomain({$singular} \$m): {$entityAlias}
+    {
+        return new {$entityAlias}(
+            id: (int) \$m->id,
+            uuid: \$m->uuid,
+{$codeToDomain}            description: \$m->description,
+            status: {$statusVo}::fromMixed(\$m->status),
+            createdBy: (string) (\$m->created_by ?? ''),
+            updatedBy: (string) (\$m->updated_by ?? ''),
+            createdAt: new \\DateTimeImmutable(\$m->created_at?->toAtomString() ?? 'now'),
+            updatedAt: new \\DateTimeImmutable(\$m->updated_at?->toAtomString() ?? 'now'),
+            deletedAt: \$m->deleted_at ? new \\DateTimeImmutable(\$m->deleted_at->toAtomString()) : null,
+        );
+    }
+}
+PHP;
+
+        File::put("{$path}/{$repositoryName}.php", $content);
+        $this->recordCreated("Infrastructure/Database/Repositories/{$repositoryName}.php");
+    }
+
+    /**
+     * Create NotFoundException
+     */
+    private function createNotFoundException(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $basePath */
+
+        $path = "{$basePath}/Domain/Exceptions";
+        File::ensureDirectoryExists($path);
+        $exceptionName = "{$singular}NotFoundException";
+
+        $content = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Domain\\Exceptions;
+
+use App\\Shared\\Domain\\Exceptions\\ResourceNotFoundException;
+
+final class {$exceptionName} extends ResourceNotFoundException
+{
+    public static function withUuid(string \$uuid): self
+    {
+        return new self("{$singular} con UUID {\$uuid} no encontrado");
+    }
+}
+PHP;
+
+        File::put("{$path}/{$exceptionName}.php", $content);
+        $this->recordCreated("Domain/Exceptions/{$exceptionName}.php");
+    }
+
+    /**
+     * Create Form Requests (Create, Update, Filter)
+     */
+    private function createRequests(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $table @var string $basePath @var bool $hasCode */
+
+        $path = "{$basePath}/Infrastructure/Http/Requests";
+        File::ensureDirectoryExists($path);
+        $conn = $connection !== null && $connection !== '' ? $connection.'.' : '';
+
+        // ---- Fragmentos condicionales de code ----
+        $useRule = $hasCode ? "use Illuminate\\Validation\\Rule;\n" : '';
+        $prepareCode = $hasCode
+            ? "        \$code = (string) \$this->input('code', '');\n        \$code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', \$code));\n        \$this->merge(['code' => \$code, 'description' => \$description]);"
+            : "        \$this->merge(['description' => \$description]);";
+
+        // Create rules
+        $createCodeRule = $hasCode
+            ? "            'code' => [\n                'required',\n                'string',\n                'max:10',\n                'regex:/^[A-Z0-9]+\$/',\n                Rule::unique('{$conn}{$table}', 'code')->whereNull('deleted_at'),\n            ],\n"
+            : '';
+        $updateCodeRule = $hasCode
+            ? "            'code' => [\n                'required',\n                'string',\n                'max:10',\n                'regex:/^[A-Z0-9]+\$/',\n                Rule::unique('{$conn}{$table}', 'code')\n                    ->ignore(\$this->route('uuid'), 'uuid')\n                    ->whereNull('deleted_at'),\n            ],\n"
+            : '';
+        $createDescRule = "            'description' => [\n                'required',\n                'string',\n                'max:191',\n                Rule::unique('{$conn}{$table}', 'description')->whereNull('deleted_at'),\n            ],";
+        $updateDescRule = "            'description' => [\n                'required',\n                'string',\n                'max:191',\n                Rule::unique('{$conn}{$table}', 'description')\n                    ->ignore(\$this->route('uuid'), 'uuid')\n                    ->whereNull('deleted_at'),\n            ],";
+        // Sin code no importamos Rule salvo por description unique -> siempre lo necesitamos.
+        $useRule = "use Illuminate\\Validation\\Rule;\n";
+
+        $codeMessages = $hasCode
+            ? "            'code.required' => 'El campo código es requerido',\n            'code.max' => 'El campo código debe tener máximo 10 caracteres',\n            'code.regex' => 'El código solo puede contener letras y números, sin espacios ni símbolos',\n            'code.unique' => 'El código que intenta guardar ya existe',\n"
+            : '';
+
+        // ===== Create =====
+        $create = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Infrastructure\\Http\\Requests;
+
+use Illuminate\\Foundation\\Http\\FormRequest;
+{$useRule}
+class Create{$singular}Request extends FormRequest
+{
+    public function authorize(): bool { return true; }
+
+    protected function prepareForValidation(): void
+    {
+        \$description = trim((string) \$this->input('description', ''));
+{$prepareCode}
+    }
+
+    public function rules(): array
+    {
+        return [
+{$createCodeRule}{$createDescRule}
+            'status' => 'required|boolean',
+        ];
+    }
+
+    public function messages(): array
+    {
+        return [
+{$codeMessages}            'description.required' => 'El campo descripción es requerido',
+            'description.string' => 'El campo descripción debe ser un texto',
+            'description.max' => 'El campo descripción debe tener máximo 191 caracteres',
+            'description.unique' => 'Ya existe un registro con esta descripción',
+            'status.required' => 'El campo estado es requerido',
+            'status.boolean' => 'El campo estado no tiene un valor válido',
+        ];
+    }
+}
+PHP;
+        File::put("{$path}/Create{$singular}Request.php", $create);
+        $this->recordCreated("Infrastructure/Http/Requests/Create{$singular}Request.php");
+
+        // ===== Update =====
+        $update = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Infrastructure\\Http\\Requests;
+
+use Illuminate\\Foundation\\Http\\FormRequest;
+{$useRule}
+class Update{$singular}Request extends FormRequest
+{
+    public function authorize(): bool { return true; }
+
+    protected function prepareForValidation(): void
+    {
+        \$description = trim((string) \$this->input('description', ''));
+{$prepareCode}
+    }
+
+    public function rules(): array
+    {
+        return [
+{$updateCodeRule}{$updateDescRule}
+            'status' => ['required', 'in:0,1'],
+        ];
+    }
+
+    public function messages(): array
+    {
+        return [
+{$codeMessages}            'description.required' => 'El campo descripción es requerido',
+            'description.string' => 'El campo descripción debe ser un texto',
+            'description.max' => 'El campo descripción debe tener máximo 191 caracteres',
+            'description.unique' => 'Ya existe un registro con esta descripción',
+            'status.required' => 'El campo estado es requerido',
+            'status.in' => 'El campo estado no tiene un valor válido',
+        ];
+    }
+}
+PHP;
+        File::put("{$path}/Update{$singular}Request.php", $update);
+        $this->recordCreated("Infrastructure/Http/Requests/Update{$singular}Request.php");
+
+        // ===== Filter =====
+        $filter = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Infrastructure\\Http\\Requests;
+
+use Illuminate\\Foundation\\Http\\FormRequest;
+
+class Filter{$plural}Request extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'search' => ['nullable', 'string'],
+            'page' => ['nullable', 'integer', 'min:1'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ];
+    }
+}
+PHP;
+        File::put("{$path}/Filter{$plural}Request.php", $filter);
+        $this->recordCreated("Infrastructure/Http/Requests/Filter{$plural}Request.php");
+    }
+
+    /**
+     * Create Controller (variante usuario/Casbin o interno/guard).
+     */
+    private function createController(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $moduleCode @var string $basePath @var bool $hasCode @var bool $isInternal @var string $visibleName */
+
+        $path = "{$basePath}/Infrastructure/Http/Controllers";
+        File::ensureDirectoryExists($path);
+
+        $content = $isInternal
+            ? $this->buildInternalController()
+            : $this->buildUserController();
+
+        File::put("{$path}/{$singular}Controller.php", $content);
+        $this->recordCreated("Infrastructure/Http/Controllers/{$singular}Controller.php");
+    }
+
+    /**
+     * Controller de módulo de usuario: permisos Casbin por acción.
+     */
+    private function buildUserController(): string
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $moduleCode @var string $singularCamel @var bool $hasCode @var string $visibleName */
+
+        $visibleLower = mb_strtolower($visibleName);
+
+        $validateHandlerUse = $hasCode ? "\n    Validate{$singular}CodeHandler," : '';
+        $validateHandlerCtor = $hasCode ? "        private Validate{$singular}CodeHandler \$validate{$singular}CodeHandler,\n" : '';
+
+        $codeStore = $hasCode ? "            code: \$r->input('code'),\n" : '';
+        $codeUpdate = $hasCode ? "            code: \$r->input('code'),\n" : '';
+
+        $validateMethod = $hasCode ? <<<PHP
+
+    public function validateCode()
+    {
+        \$rawCode = (string) request()->input('code', '');
+        \$code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', \$rawCode));
+
+        \$validated = validator(
+            ['uuid' => request()->input('uuid'), 'code' => \$code],
+            [
+                'uuid' => ['nullable', 'string'],
+                'code' => ['required', 'string', 'max:10', 'regex:/^[A-Z0-9]+\$/'],
+            ],
+            [
+                'code.regex' => 'El código solo puede contener letras y números, sin espacios ni símbolos.',
+            ]
+        )->validate();
+
+        \$exists = \$this->validate{$singular}CodeHandler->handle(
+            \$validated['code'],
+            \$validated['uuid'] ?? null
+        );
+
+        return response()->json(['exists' => \$exists]);
+    }
+
+PHP : "\n";
+
+        return <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Infrastructure\\Http\\Controllers;
+
+use App\\Http\\Controllers\\Controller;
+use Inertia\\Inertia;
+use Illuminate\\Support\\Facades\\Auth;
+use Sodeker\\LaravelCasbin\\Domain\\Contracts\\PermissionServiceInterface;
+
+use {$ns}\\{$plural}\\Infrastructure\\Http\\Requests\\{
+    Create{$singular}Request,
+    Update{$singular}Request,
+    Filter{$plural}Request,
+};
+
+use {$ns}\\{$plural}\\Application\\Handlers\\{
+    List{$plural}Handler,
+    Get{$singular}ByUuidHandler,
+    Create{$singular}Handler,{$validateHandlerUse}
+    Update{$singular}Handler,
+    Delete{$singular}Handler,
+};
+
+use {$ns}\\{$plural}\\Application\\Commands\\{
+    Update{$singular}Command,
+    Create{$singular}Command,
+    Delete{$singular}Command,
+};
+
+class {$singular}Controller extends Controller
+{
+    public function __construct(
+        private PermissionServiceInterface \$permissionService,
+        private Get{$singular}ByUuidHandler \$get{$singular}ByUuidHandler,
+        private Create{$singular}Handler \$create{$singular}Handler,
+{$validateHandlerCtor}        private Update{$singular}Handler \$update{$singular}Handler,
+        private Delete{$singular}Handler \$delete{$singular}Handler,
+    ) {}
+
+    public function index(Filter{$plural}Request \$r, List{$plural}Handler \$handler)
+    {
+        \$userId = (int) Auth::id();
+        \$tenantId = (int) session('tenant_id');
+        \$module = '{$moduleCode}';
+        \$permissions = [
+            'view' => \$this->permissionService->can(\$userId, \$tenantId, \$module, 'view'),
+            'create' => \$this->permissionService->can(\$userId, \$tenantId, \$module, 'create'),
+            'edit' => \$this->permissionService->can(\$userId, \$tenantId, \$module, 'edit'),
+            'delete' => \$this->permissionService->can(\$userId, \$tenantId, \$module, 'delete'),
+        ];
+
+        if (! \$permissions['view']) {
+            return Inertia::render('{$plural}/Index', [
+                'canViewModule' => false,
+                'message' => 'No tienes permisos para acceder al módulo de {$visibleLower}.',
+                'permissions' => \$permissions,
+                '{$moduleCode}' => ['data' => [], 'meta' => ['total' => 0]],
+                'title' => '{$visibleName}',
+            ]);
+        }
+
+        \$filters = \$r->validated();
+        \$page = (int) (\$filters['page'] ?? 1);
+        \$perPage = (int) (\$filters['per_page'] ?? 15);
+
+        \$collectionDTO = \$handler->handle(\$filters, \$page, \$perPage);
+
+        return Inertia::render('{$plural}/Index', [
+            'canViewModule' => true,
+            'permissions' => \$permissions,
+            '{$moduleCode}' => \$collectionDTO->toArray(),
+            'title' => '{$visibleName}',
+        ]);
+    }
+
+    public function viewCreate()
+    {
+        return Inertia::render('{$plural}/Create', []);
+    }
+
+    public function viewEdit(string \$uuid)
+    {
+        \$dto = \$this->get{$singular}ByUuidHandler->handle(\$uuid);
+
+        return Inertia::render('{$plural}/Edit', [
+            'uuid' => \$uuid,
+            '{$singularCamel}' => \$dto->toArray(),
+        ]);
+    }
+
+    public function viewShow(string \$uuid)
+    {
+        \$dto = \$this->get{$singular}ByUuidHandler->handle(\$uuid);
+
+        return Inertia::render('{$plural}/Show', [
+            'uuid' => \$uuid,
+            '{$singularCamel}' => \$dto->toArray(),
+        ]);
+    }
+
+    public function store(Create{$singular}Request \$r)
+    {
+        \$userId = (string) (Auth::id() ?? 1);
+        \$cmd = new Create{$singular}Command(
+{$codeStore}            description: \$r->input('description'),
+            status: \$r->input('status'),
+            createdBy: \$userId,
+            updatedBy: \$userId,
+        );
+        \$dto = \$this->create{$singular}Handler->handle(\$cmd);
+
+        return response()->json(['data' => \$dto->toArray()]);
+    }
+{$validateMethod}
+    public function update(string \$uuid, Update{$singular}Request \$r)
+    {
+        \$userId = (string) (Auth::id() ?? 1);
+        \$command = new Update{$singular}Command(
+            uuid: \$uuid,
+{$codeUpdate}            description: \$r->input('description'),
+            status: \$r->input('status'),
+            actorId: \$userId,
+        );
+
+        \$dto = \$this->update{$singular}Handler->handle(\$command);
+
+        return response()->json(['data' => \$dto->toArray()]);
+    }
+
+    public function destroy(string \$uuid)
+    {
+        \$this->delete{$singular}Handler->handle(new Delete{$singular}Command(\$uuid));
+
+        return response()->noContent();
+    }
+}
+PHP;
+    }
+
+    /**
+     * Controller de módulo interno: guard de la cuenta Sodeker (Developer),
+     * sin Casbin ni menú.
+     */
+    private function buildInternalController(): string
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var string $singular @var string $moduleCode @var string $singularCamel @var bool $hasCode @var string $visibleName */
+
+        $visibleLower = mb_strtolower($visibleName);
+
+        $validateHandlerUse = $hasCode ? "\n    Validate{$singular}CodeHandler," : '';
+        $validateHandlerCtor = $hasCode ? "        private Validate{$singular}CodeHandler \$validate{$singular}CodeHandler,\n" : '';
+
+        $codeStore = $hasCode ? "            code: \$r->input('code'),\n" : '';
+        $codeUpdate = $hasCode ? "            code: \$r->input('code'),\n" : '';
+
+        $validateMethod = $hasCode ? <<<PHP
+
+    public function validateCode()
+    {
+        if (! \$this->userCanManage()) {
+            return response()->json(['message' => 'No tienes permisos para validar códigos de {$visibleLower}.'], 403);
+        }
+
+        \$rawCode = (string) request()->input('code', '');
+        \$code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', \$rawCode));
+
+        \$validated = validator(
+            ['uuid' => request()->input('uuid'), 'code' => \$code],
+            [
+                'uuid' => ['nullable', 'string'],
+                'code' => ['required', 'string', 'max:10', 'regex:/^[A-Z0-9]+\$/'],
+            ],
+            [
+                'code.regex' => 'El código solo puede contener letras y números, sin espacios ni símbolos.',
+            ]
+        )->validate();
+
+        \$exists = \$this->validate{$singular}CodeHandler->handle(
+            \$validated['code'],
+            \$validated['uuid'] ?? null
+        );
+
+        return response()->json(['exists' => \$exists]);
+    }
+
+PHP : "\n";
+
+        return <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace {$ns}\\{$plural}\\Infrastructure\\Http\\Controllers;
+
+use App\\Http\\Controllers\\Controller;
+use App\\Modules\\Tenants\\Domain\\DevelopTenantMembershipRule;
+use Inertia\\Inertia;
+use Illuminate\\Support\\Facades\\Auth;
+
+use {$ns}\\{$plural}\\Infrastructure\\Http\\Requests\\{
+    Create{$singular}Request,
+    Update{$singular}Request,
+    Filter{$plural}Request,
+};
+
+use {$ns}\\{$plural}\\Application\\Handlers\\{
+    List{$plural}Handler,
+    Get{$singular}ByUuidHandler,
+    Create{$singular}Handler,{$validateHandlerUse}
+    Update{$singular}Handler,
+    Delete{$singular}Handler,
+};
+
+use {$ns}\\{$plural}\\Application\\Commands\\{
+    Update{$singular}Command,
+    Create{$singular}Command,
+    Delete{$singular}Command,
+};
+
+class {$singular}Controller extends Controller
+{
+    public function __construct(
+        private Get{$singular}ByUuidHandler \$get{$singular}ByUuidHandler,
+        private Create{$singular}Handler \$create{$singular}Handler,
+{$validateHandlerCtor}        private Update{$singular}Handler \$update{$singular}Handler,
+        private Delete{$singular}Handler \$delete{$singular}Handler,
+    ) {}
+
+    /**
+     * Módulo interno sin menú: solo la cuenta sembrada Sodeker con rol
+     * Developer puede administrar este recurso (mismo guard que Authentications).
+     */
+    private function userCanManage(): bool
+    {
+        \$user = Auth::user();
+        if (\$user === null) {
+            return false;
+        }
+
+        \$email = (string) (\$user->email ?? '');
+        \$roleCode = (string) (\$user->role?->code ?? '');
+
+        return strcasecmp(\$email, DevelopTenantMembershipRule::ALLOWED_EMAIL) === 0
+            && strcasecmp(\$roleCode, DevelopTenantMembershipRule::ALLOWED_ROLE_CODE) === 0;
+    }
+
+    public function index(Filter{$plural}Request \$r, List{$plural}Handler \$handler)
+    {
+        if (! \$this->userCanManage()) {
+            return Inertia::render('{$plural}/Index', [
+                'canViewModule' => false,
+                'message' => 'Esta sección está disponible únicamente para la cuenta Sodeker con rol Developer.',
+                'permissions' => ['view' => false, 'create' => false, 'edit' => false, 'delete' => false],
+                '{$moduleCode}' => ['data' => [], 'meta' => ['total' => 0]],
+                'title' => '{$visibleName}',
+            ]);
+        }
+
+        \$filters = \$r->validated();
+        \$page = (int) (\$filters['page'] ?? 1);
+        \$perPage = (int) (\$filters['per_page'] ?? 15);
+
+        \$collectionDTO = \$handler->handle(\$filters, \$page, \$perPage);
+
+        return Inertia::render('{$plural}/Index', [
+            'canViewModule' => true,
+            'permissions' => ['view' => true, 'create' => true, 'edit' => true, 'delete' => true],
+            '{$moduleCode}' => \$collectionDTO->toArray(),
+            'title' => '{$visibleName}',
+        ]);
+    }
+
+    public function viewCreate()
+    {
+        if (! \$this->userCanManage()) {
+            return redirect()->route('{$moduleCode}.index');
+        }
+
+        return Inertia::render('{$plural}/Create', []);
+    }
+
+    public function viewEdit(string \$uuid)
+    {
+        if (! \$this->userCanManage()) {
+            return redirect()->route('{$moduleCode}.index');
+        }
+
+        \$dto = \$this->get{$singular}ByUuidHandler->handle(\$uuid);
+
+        return Inertia::render('{$plural}/Edit', [
+            'uuid' => \$uuid,
+            '{$singularCamel}' => \$dto->toArray(),
+        ]);
+    }
+
+    public function viewShow(string \$uuid)
+    {
+        if (! \$this->userCanManage()) {
+            return redirect()->route('{$moduleCode}.index');
+        }
+
+        \$dto = \$this->get{$singular}ByUuidHandler->handle(\$uuid);
+
+        return Inertia::render('{$plural}/Show', [
+            'uuid' => \$uuid,
+            '{$singularCamel}' => \$dto->toArray(),
+        ]);
+    }
+
+    public function store(Create{$singular}Request \$r)
+    {
+        if (! \$this->userCanManage()) {
+            return response()->json(['message' => 'No tienes permisos para crear {$visibleLower}.'], 403);
+        }
+
+        \$userId = (string) (Auth::id() ?? 1);
+        \$cmd = new Create{$singular}Command(
+{$codeStore}            description: \$r->input('description'),
+            status: \$r->input('status'),
+            createdBy: \$userId,
+            updatedBy: \$userId,
+        );
+        \$dto = \$this->create{$singular}Handler->handle(\$cmd);
+
+        return response()->json(['data' => \$dto->toArray()]);
+    }
+{$validateMethod}
+    public function update(string \$uuid, Update{$singular}Request \$r)
+    {
+        if (! \$this->userCanManage()) {
+            return response()->json(['message' => 'No tienes permisos para editar {$visibleLower}.'], 403);
+        }
+
+        \$userId = (string) (Auth::id() ?? 1);
+        \$command = new Update{$singular}Command(
+            uuid: \$uuid,
+{$codeUpdate}            description: \$r->input('description'),
+            status: \$r->input('status'),
+            actorId: \$userId,
+        );
+
+        \$dto = \$this->update{$singular}Handler->handle(\$command);
+
+        return response()->json(['data' => \$dto->toArray()]);
+    }
+
+    public function destroy(string \$uuid)
+    {
+        if (! \$this->userCanManage()) {
+            return response()->json(['message' => 'No tienes permisos para eliminar {$visibleLower}.'], 403);
+        }
+
+        \$this->delete{$singular}Handler->handle(new Delete{$singular}Command(\$uuid));
+
+        return response()->noContent();
+    }
+}
+PHP;
+    }
+
+    /**
+     * Create Routes file (variante usuario/Casbin o interno/guard).
+     */
+    private function createRoutesFile(): void
+    {
+        extract($this->ctx);
+        /** @var string $plural @var string $singular @var string $moduleCode @var string $kebab @var string $basePath @var bool $hasCode @var bool $isInternal @var string $indexUrl */
+
+        $path = "{$basePath}/Infrastructure/Http/Routes";
+        File::ensureDirectoryExists($path);
+        $controller = "{$singular}Controller";
+
+        $validateRoute = $hasCode
+            ? "\n    Route::post('{$kebab}/validate-code', [{$controller}::class, 'validateCode'])->name('{$moduleCode}.validateCode');\n"
+            : '';
+
+        if ($isInternal) {
+            $content = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\\Support\\Facades\\Route;
+use {$ns}\\{$plural}\\Infrastructure\\Http\\Controllers\\{$controller};
+
+// Módulo interno (sin menú ni permisos Casbin): el acceso se restringe en el
+// controller a la cuenta Sodeker con rol Developer, igual que Authentications.
+Route::middleware(['web', 'auth:sanctum', config('jetstream.auth_session'), 'verified', 'tenant.selected', 'tenant'])->group(function () {
+    Route::get('{$indexUrl}', [{$controller}::class, 'index'])->name('{$moduleCode}.index');
+    Route::get('/{$kebab}/{uuid}/show', [{$controller}::class, 'viewShow'])->name('{$moduleCode}.show');
+
+    Route::get('/{$kebab}/create', [{$controller}::class, 'viewCreate'])->name('{$moduleCode}.create');
+    Route::post('/{$kebab}-create', [{$controller}::class, 'store'])->name('{$moduleCode}.store');
+
+    Route::get('/{$kebab}/{uuid}/edit', [{$controller}::class, 'viewEdit'])->name('{$moduleCode}.edit');
+    Route::put('/{$kebab}/{uuid}', [{$controller}::class, 'update'])->name('{$moduleCode}.update');
+
+    Route::delete('/{$kebab}/{uuid}', [{$controller}::class, 'destroy'])->name('{$moduleCode}.destroy');
+{$validateRoute}});
+PHP;
+        } else {
+            $content = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\\Support\\Facades\\Route;
+use {$ns}\\{$plural}\\Infrastructure\\Http\\Controllers\\{$controller};
+
+Route::middleware(['web', 'tenant.selected', 'tenant'])->group(function () {
+    \$sanctumVerified = ['auth:sanctum', config('jetstream.auth_session'), 'verified'];
+
+    Route::middleware(array_merge(\$sanctumVerified, ['casbin:{$moduleCode},view']))->group(function () {
+        Route::get('{$indexUrl}', [{$controller}::class, 'index'])
+            ->name('{$moduleCode}.index');
+        Route::get('/{$kebab}/{uuid}/show', [{$controller}::class, 'viewShow'])
+            ->name('{$moduleCode}.show');
+    });
+
+    Route::middleware(['auth', 'casbin:{$moduleCode},create'])->group(function () {
+        Route::get('/{$kebab}/create', [{$controller}::class, 'viewCreate'])
+            ->name('{$moduleCode}.create');
+        Route::post('/{$kebab}-create', [{$controller}::class, 'store'])
+            ->name('{$moduleCode}.store');
+    });
+
+    Route::middleware(['auth', 'casbin:{$moduleCode},edit'])->group(function () {
+        Route::get('/{$kebab}/{uuid}/edit', [{$controller}::class, 'viewEdit'])
+            ->name('{$moduleCode}.edit');
+        Route::put('/{$kebab}/{uuid}', [{$controller}::class, 'update'])
+            ->name('{$moduleCode}.update');
+    });
+
+    Route::middleware(['auth', 'casbin:{$moduleCode},delete'])->group(function () {
+        Route::delete('/{$kebab}/{uuid}', [{$controller}::class, 'destroy'])
+            ->name('{$moduleCode}.destroy');
+    });
+{$validateRoute}});
+PHP;
+        }
+
+        File::put("{$path}/web.php", $content);
+        $this->recordCreated("Infrastructure/Http/Routes/web.php");
+    }
+
+    /**
+     * Create Vue front pages (Index, Create, Edit, Show).
+     */
+    private function createVueFront(): void
+    {
+        extract($this->ctx);
+        /** @var string $plural */
+
+        $pagesPath = resource_path("js/{$this->pagesPath}/{$plural}");
+        File::ensureDirectoryExists($pagesPath);
+        $this->recordCreated("resources/js/Pages/{$plural}");
+
+        File::put("{$pagesPath}/Index.vue", $this->buildVueIndex());
+        $this->recordCreated("resources/js/Pages/{$plural}/Index.vue");
+
+        File::put("{$pagesPath}/Create.vue", $this->buildVueForm(false));
+        $this->recordCreated("resources/js/Pages/{$plural}/Create.vue");
+
+        File::put("{$pagesPath}/Edit.vue", $this->buildVueForm(true));
+        $this->recordCreated("resources/js/Pages/{$plural}/Edit.vue");
+
+        File::put("{$pagesPath}/Show.vue", $this->buildVueShow());
+        $this->recordCreated("resources/js/Pages/{$plural}/Show.vue");
+    }
+
+    private function buildVueIndex(): string
+    {
+        extract($this->ctx);
+        /** @var string $plural @var string $moduleCode @var bool $hasCode @var string $visibleName */
+
+        $visibleLower = mb_strtolower($visibleName);
+
+        // Encabezados y búsqueda según haya code.
+        if ($hasCode) {
+            $headers = "                    { label: 'Código', key: 'code', width: '20%' },\n                    { label: 'Descripción', key: 'description', width: '50%' },\n                    { label: 'Estado', key: 'status', width: '15%' },\n                    { label: 'Acciones', key: 'actions', width: '15%' },";
+            $searchFilter = "                item.code?.toLowerCase().includes(query) ||\n                item.description?.toLowerCase().includes(query)";
+            $orderBy = 'code';
+            $searchPlaceholder = 'Buscar por código o descripción...';
+        } else {
+            $headers = "                    { label: 'Descripción', key: 'description', width: '70%' },\n                    { label: 'Estado', key: 'status', width: '15%' },\n                    { label: 'Acciones', key: 'actions', width: '15%' },";
+            $searchFilter = "                item.description?.toLowerCase().includes(query)";
+            $orderBy = 'description';
+            $searchPlaceholder = 'Buscar por descripción...';
+        }
+
+        $codeColumn = $hasCode
+            ? "                                <template #cell-code=\"{ item }\">\n                                    <span class=\"fw-medium\">{{ item.code }}</span>\n                                </template>\n"
+            : '';
+
+        return <<<VUE
 <script>
     import Layout from "@/Layouts/main.vue";
+    import { router, Head } from "@inertiajs/vue3";
+
     import PageHeader from "@/Components/page-header.vue";
     import DataTable from "@/Components/DataTable.vue";
-    import { router } from '@inertiajs/vue3';
+    import AccessDeniedCard from '@/Components/AccessDeniedCard.vue';
+
     import { useAlert } from '@/Composables/useSweetAlert.js';
     import { useFetchPetition } from '@/Composables/useFetchPetition.js';
 
-    const { showAlert, showLoading, showConfirm } = useAlert();
+    const { showAlert, showConfirm } = useAlert();
     const { fetchPetition } = useFetchPetition();
 
     export default {
@@ -1058,55 +2195,81 @@ PHP;
             Layout,
             PageHeader,
             DataTable,
+            AccessDeniedCard,
+            Head,
         },
         props: {
-            {$pluralLower}: {
+            canViewModule: {
+                type: Boolean,
+                default: true,
+            },
+            message: {
+                type: String,
+                default: '',
+            },
+            permissions: {
+                type: Object,
+                default: () => ({ view: false, create: false, edit: false, delete: false }),
+            },
+            {$moduleCode}: {
                 type: Object,
                 required: true,
                 default: () => ({ data: [], meta: { total: 0 } }),
             },
+            title: {
+                type: String,
+                default: '{$visibleName}',
+            },
         },
         data() {
             return {
-                tableHeaders: [
-                    { label: 'Descripción', key: 'description', width: '80%' },
-                    { label: 'Acciones', key: 'actions', width: '20%' },
-                ],
                 searchQuery: '',
-                currentPage: 1,
+                isDeleting: false,
+                tableHeaders: [
+{$headers}
+                ],
             };
         },
         computed: {
             filteredItems() {
-                const rows = this.{$pluralLower}?.data ?? [];
-                const raw = (this.searchQuery || '').trim();
-                if (!raw) return rows;
-                const q = raw.toLowerCase();
-                return rows.filter((item) =>
-                    String(item.description ?? '').toLowerCase().includes(q)
+                const list = this.{$moduleCode}.data || [];
+                const query = this.searchQuery.trim().toLowerCase();
+                if (!query) {
+                    return list;
+                }
+                return list.filter(item =>
+{$searchFilter}
                 );
             },
         },
         methods: {
-            async deleteItem(uuid) {
+            async deleteItem(item) {
+                if (!item?.uuid || this.isDeleting) return;
                 const confirmed = await showConfirm(
-                    'warning',
-                    '¡Alerta!',
-                    '¿Está seguro que desea eliminar este registro?',
-                    'Sí, eliminar'
+                    "warning",
+                    "¡Alerta!",
+                    "¿Está seguro que desea eliminar este registro?",
+                    "Sí, eliminar"
                 );
                 if (!confirmed) return;
-                const loading = showLoading("Eliminando registro", "Por favor espera...");
-                const response = await fetchPetition(route('{$pluralLower}.destroy', uuid), { method: 'DELETE' });
-                loading.close();
-                if (response.ok) {
-                    showAlert('success', '¡Éxito!', 'Registro eliminado correctamente', 1500);
-                    router.visit(route('{$pluralLower}.index'));
-                    return;
-                } else {
-                    const data = response.data;
-                    const message = data?.message || 'Ocurrió un error al eliminar el registro';
-                    showAlert('warning', 'Alerta', message, 3000);
+                this.isDeleting = true;
+                try {
+                    const response = await fetchPetition(route("{$moduleCode}.destroy", item.uuid), {
+                        method: "DELETE",
+                    });
+                    if (response.ok) {
+                        showAlert("success", "Éxito", "Registro eliminado correctamente", 1500);
+                        router.visit(route('{$moduleCode}.index'));
+                    } else {
+                        const data = response.data || {};
+                        const message = data.message ||
+                            (data.errors ? Object.values(data.errors).flat().join(" ") : "Error al eliminar el registro");
+                        showAlert("error", "Error", message, 3000);
+                    }
+                } catch (error) {
+                    showAlert("error", "Error inesperado", "Ocurrió un error al eliminar el registro", 2000);
+                } finally {
+                    this.isDeleting = false;
                 }
             },
         },
@@ -1119,121 +2282,268 @@ PHP;
 </script>
 
 <template>
+    <Head :title="title" />
     <Layout>
-        <PageHeader title="{$plural}" pageTitle="Gestión" />
-        <div class="row">
-            <div class="col-lg-12">
+        <PageHeader title="{$visibleName}" pageTitle="Gestión" />
+        <div v-if="!canViewModule" class="row justify-content-center">
+            <div class="col-lg-6">
+                <AccessDeniedCard :message="message" />
+            </div>
+        </div>
+        <div v-else class="row">
+            <div class="col-12">
                 <div class="card">
-                    <div class="card-header border-bottom-dashed">
+                    <div class="card-header">
                         <div class="row g-4 align-items-center">
                             <div class="col-sm">
-                                <div>
-                                    <h5 class="card-title mb-0">Listado {$plural}</h5>
-                                </div>
+                                <h5 class="card-title mb-0">Listado</h5>
                             </div>
                             <div class="col-sm-auto">
-                                <div class="d-flex flex-wrap gap-2">
-                                    <a :href="route('{$pluralLower}.create')" class="btn btn-primary"><i class="ri-add-line align-bottom me-1"></i>Nuevo</a>
+                                <div class="d-flex flex-wrap align-items-start gap-2" v-if="permissions.create">
+                                    <a :href="route('{$moduleCode}.create')" class="btn btn-success add-btn">
+                                        <i class="ri-add-line align-bottom me-1"></i> Nuevo
+                                    </a>
                                 </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="card-body border-bottom-dashed border-bottom">
-                        <div class="row g-3">
-                            <div class="col-xl-12">
-                                <input type="text" class="form-control" placeholder="Buscar..." v-model="searchQuery">
                             </div>
                         </div>
                     </div>
                     <div class="card-body">
-                        <DataTable
-                            id="tabla_{$pluralLower}"
-                            :headers="tableHeaders"
-                            :items="filteredItems"
-                            :page-length="9"
-                            order-by="description"
-                        >
-                            <template #cell-description="{ item }">
-                                <a class="fw-medium text-primary cell-description">
-                                    {{ item.description || '' }}
-                                </a>
-                            </template>
-                            <template #cell-actions="{ item }">
-                                <ul class="list-inline hstack gap-2 mb-0">
-                                    <li class="list-inline-item">
-                                        <a :href="route('{$pluralLower}.show', item.uuid)" class="text-primary" title="Ver">
-                                            <i class="ri-eye-fill fs-16"></i>
-                                        </a>
-                                    </li>
-                                    <li class="list-inline-item edit">
-                                        <a :href="route('{$pluralLower}.edit', item.uuid)" class="text-primary" title="Editar">
-                                            <i class="ri-pencil-fill fs-16"></i>
-                                        </a>
-                                    </li>
-                                    <li class="list-inline-item">
-                                        <a class="text-danger" style="cursor: pointer;" title="Eliminar" @click="deleteItem(item.uuid)">
-                                            <i class="ri-delete-bin-5-fill fs-16"></i>
-                                        </a>
-                                    </li>
-                                </ul>
-                            </template>
-                        </DataTable>
+                        <div class="row g-3">
+                            <div class="col-xl-12 mb-3">
+                                <div class="search-box">
+                                    <input
+                                        v-model.trim="searchQuery"
+                                        type="text"
+                                        class="form-control"
+                                        placeholder="{$searchPlaceholder}"
+                                    />
+                                    <i class="ri-search-line search-icon"></i>
+                                </div>
+                            </div>
+                            <DataTable
+                                id="table_{$moduleCode}"
+                                :headers="tableHeaders"
+                                :items="filteredItems"
+                                :page-length="10"
+                                order-by="{$orderBy}">
+{$codeColumn}                                <template #cell-description="{ item }">
+                                    <span>{{ item.description || '' }}</span>
+                                </template>
+                                <template #cell-status="{ item }">
+                                    <span class="badge bg-success-subtle text-success" v-if="String(item.status) === '1'">
+                                        Activo
+                                    </span>
+                                    <span class="badge bg-danger-subtle text-danger" v-else>
+                                        Inactivo
+                                    </span>
+                                </template>
+                                <template #cell-actions="{ item }">
+                                    <ul class="list-inline hstack gap-2 mb-0">
+                                        <li class="list-inline-item" v-if="permissions.view">
+                                            <a :href="route('{$moduleCode}.show', item.uuid)" class="text-primary" title="Ver">
+                                                <i class="ri-eye-fill fs-16"></i>
+                                            </a>
+                                        </li>
+                                        <li class="list-inline-item" v-if="permissions.edit">
+                                            <a :href="route('{$moduleCode}.edit', item.uuid)" class="text-primary" title="Editar">
+                                                <i class="ri-pencil-fill fs-16"></i>
+                                            </a>
+                                        </li>
+                                        <li class="list-inline-item" v-if="permissions.delete">
+                                            <a @click="deleteItem(item)" class="text-danger" style="cursor: pointer" title="Eliminar">
+                                                <i class="ri-delete-bin-5-fill fs-16"></i>
+                                            </a>
+                                        </li>
+                                    </ul>
+                                </template>
+                            </DataTable>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
     </Layout>
 </template>
-
-<style scoped>
-.cell-description {
-    display: inline-block;
-    max-width: 700px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-</style>
 VUE;
-        File::put("{$pagesPath}/Index.vue", $indexContent);
-        $this->recordCreated("resources/js/Pages/{$moduleNamePlural}/Index.vue");
+    }
 
-        // ===== Create.vue =====
-        $createContent = <<<VUE
+    private function buildVueForm(bool $isEdit): string
+    {
+        extract($this->ctx);
+        /** @var string $plural @var string $moduleCode @var string $singularCamel @var bool $hasCode @var string $visibleName */
+
+        $formVar = 'form'.$plural;
+        $visibleSingular = Str::singular($visibleName);
+
+        $action = $isEdit ? 'Editar' : 'Crear';
+        $actionVerb = $isEdit ? 'actualizar' : 'crear';
+        $actionPast = $isEdit ? 'actualizado' : 'creado';
+        $submitIdle = $isEdit ? 'Actualizar' : 'Guardar';
+        $submitBusy = $isEdit ? 'Actualizando...' : 'Guardando...';
+
+        // Estado inicial del form.
+        $initStatus = $isEdit ? "'1'" : 'true';
+        $codeInit = $hasCode ? "                    code: '',\n" : '';
+        $formData = "{$codeInit}                    description: '',\n                    status: {$initStatus},";
+
+        // Props (Edit lleva uuid + singular).
+        $props = $isEdit
+            ? "        props: {\n            uuid: {\n                type: String,\n                required: true,\n            },\n            {$singularCamel}: {\n                type: Object,\n                required: true,\n            },\n        },\n"
+            : '';
+
+        // Watch (solo Edit) para hidratar el form.
+        $codeWatch = $hasCode ? "                        code: val?.code ?? '',\n" : '';
+        $watch = $isEdit
+            ? "        watch: {\n            {$singularCamel}: {\n                immediate: true,\n                handler(val) {\n                    this.{$formVar} = {\n{$codeWatch}                        description: val?.description ?? '',\n                        status: val?.status === '1' || val?.status === 1 || val?.status === true ? '1' : '0',\n                    };\n                },\n            },\n        },\n"
+            : '';
+
+        // Lógica de code (normalización + validación de unicidad).
+        $codeMethods = $hasCode ? <<<JS
+            normalizeCode(raw) {
+                return String(raw ?? '').replace(/[^A-Za-z0-9]/g, '');
+            },
+            onCodeInput() {
+                const normalized = this.normalizeCode(this.{$formVar}.code);
+                if (normalized !== this.{$formVar}.code) {
+                    this.{$formVar}.code = normalized;
+                }
+            },
+            async validateCodeUniqueness() {
+                const code = this.normalizeCode(this.{$formVar}.code);
+                if (code === '') return false;
+                const response = await fetchPetition(route('{$moduleCode}.validateCode'), {
+                    method: 'POST',
+                    body: {
+                        code,
+                        uuid: ##UUIDARG##,
+                    },
+                });
+                if (!response.ok) return false;
+                const exists = Boolean(response.data?.exists);
+                this.codeExistsError = exists ? 'El código ya existe' : '';
+                return exists;
+            },
+JS : '';
+        $uuidArg = $isEdit ? 'this.uuid' : 'null';
+        $codeMethods = str_replace('##UUIDARG##', $uuidArg, $codeMethods);
+        if ($codeMethods !== '') {
+            $codeMethods .= "\n";
+        }
+
+        $codeRequired = $hasCode ? "                if (!this.normalizeCode(f.code)) e.code = true;\n" : '';
+        $codeClearError = $hasCode ? "                if (field === 'code') {\n                    this.codeExistsError = '';\n                }\n" : '';
+        $codeExistsCheck = $hasCode ? "                    const codeExists = await this.validateCodeUniqueness();\n                    if (codeExists) {\n                        await this.\$nextTick();\n                        return;\n                    }\n\n" : '';
+        $codeExistsData = $hasCode ? "                codeExistsError: '',\n" : '';
+        $codeBodyNormalize = $hasCode ? "                            code: this.normalizeCode(this.{$formVar}.code),\n" : '';
+
+        // Campo code (markup).
+        $codeField = $hasCode ? <<<HTML
+                                <div class="col-4">
+                                    <label for="code" class="form-label">Código<span class="text-danger ms-1">*</span></label>
+                                    <input
+                                        v-model="{$formVar}.code"
+                                        type="text"
+                                        class="form-control"
+                                        id="code"
+                                        maxlength="10"
+                                        placeholder="Ej: COD001"
+                                        :class="{ 'field-error': formErrors.code || codeExistsError }"
+                                        @input="onCodeInput(); clearFormError('code'); codeExistsError = '';"
+                                    >
+                                    <div v-if="codeExistsError" class="invalid-feedback d-block">
+                                        {{ codeExistsError }}
+                                    </div>
+                                </div>
+                                <div class="col-8">
+                                    <label for="description" class="form-label">Descripción<span class="text-danger ms-1">*</span></label>
+                                    <input
+                                        v-model="{$formVar}.description"
+                                        type="text"
+                                        class="form-control"
+                                        id="description"
+                                        maxlength="191"
+                                        placeholder="Ingrese descripción"
+                                        :class="{ 'field-error': formErrors.description }"
+                                        @input="clearFormError('description');"
+                                    >
+                                </div>
+HTML : <<<HTML
+                                <div class="col-12">
+                                    <label for="description" class="form-label">Descripción<span class="text-danger ms-1">*</span></label>
+                                    <input
+                                        v-model="{$formVar}.description"
+                                        type="text"
+                                        class="form-control"
+                                        id="description"
+                                        maxlength="191"
+                                        placeholder="Ingrese descripción"
+                                        :class="{ 'field-error': formErrors.description }"
+                                        @input="clearFormError('description');"
+                                    >
+                                </div>
+HTML;
+
+        // Switch de estado: Create booleano; Edit con true/false-value string.
+        $statusInput = $isEdit
+            ? "                                        <input\n                                            id=\"{$moduleCode}Status\"\n                                            :true-value=\"'1'\"\n                                            :false-value=\"'0'\"\n                                            v-model=\"{$formVar}.status\"\n                                            type=\"checkbox\"\n                                            class=\"form-check-input\"\n                                        />"
+            : "                                        <input\n                                            v-model=\"{$formVar}.status\"\n                                            type=\"checkbox\"\n                                            class=\"form-check-input\"\n                                            id=\"{$moduleCode}Status\"\n                                        >";
+
+        $nameSuffix = $isEdit ? 'Edit' : 'Create';
+
+        // Endpoint y verbo HTTP del submit.
+        $request = $isEdit
+            ? "route('{$moduleCode}.update', this.uuid)"
+            : "route('{$moduleCode}.store')";
+        $method = $isEdit ? 'PUT' : 'POST';
+
+        return <<<VUE
 <script>
     import Layout from "@/Layouts/main.vue";
-    import PageHeader from "@/Components/page-header.vue";
     import { router } from '@inertiajs/vue3';
+
+    import PageHeader from "@/Components/page-header.vue";
+
     import { useFetchPetition } from "@/Composables/useFetchPetition.js";
     import { useAlert } from "@/Composables/useSweetAlert.js";
 
-    const { showAlert, showLoading, showConfirm } = useAlert();
+    const { showAlert, showConfirm } = useAlert();
     const { fetchPetition } = useFetchPetition();
 
     export default {
-        name: '{$plural}Create',
+        name: '{$plural}{$nameSuffix}',
         components: {
             Layout,
             PageHeader,
         },
-        data() {
+{$props}        data() {
             return {
-                form: {
-                    description: '',
+                {$formVar}: {
+{$formData}
                 },
                 loading: false,
-                formErrors: {},
+{$codeExistsData}                formErrors: {},
             };
         },
         methods: {
-            collectRequiredFieldErrors() {
+            async confirmCancel() {
+                const confirmed = await showConfirm(
+                    'warning',
+                    '¿Cancelar?',
+                    '¿Está seguro que desea cancelar? Se perderán los datos ingresados.',
+                    'Sí, cancelar'
+                );
+                if (confirmed) {
+                    router.visit(route('{$moduleCode}.index'));
+                }
+            },
+{$codeMethods}            collectRequiredFieldErrors() {
                 const e = {};
-                const f = this.form;
-                if (!f.description || String(f.description).trim() === '') e.description = true;
+                const f = this.{$formVar};
+{$codeRequired}                if (!f.description || String(f.description).trim() === '') e.description = true;
                 return e;
             },
             clearFormError(field) {
-                if (this.formErrors[field]) {
+{$codeClearError}                if (this.formErrors[field]) {
                     const next = { ...this.formErrors };
                     delete next[field];
                     this.formErrors = next;
@@ -1249,69 +2559,68 @@ VUE;
                         await showAlert('warning', '¡Alerta!', 'Campos sin diligenciar. Revise los campos resaltados.', 2500);
                         return;
                     }
-                    const confirmed = await showConfirm(
+
+{$codeExistsCheck}                    const confirmed = await showConfirm(
                         'warning',
                         '¡Alerta!',
-                        '¿Está seguro que desea crear este registro?',
-                        'Sí, crear'
+                        '¿Está seguro que desea {$actionVerb} este {$visibleSingular}?',
+                        'Sí, {$actionVerb}'
                     );
                     if (!confirmed) return;
-                    const loading = showLoading("Creando registro", "Por favor espera...");
+
                     this.loading = true;
-                    const response = await fetchPetition(route('{$pluralLower}.store'), {
-                        method: 'POST',
-                        body: this.form,
+                    const response = await fetchPetition({$request}, {
+                        method: '{$method}',
+                        body: {
+                            ...this.{$formVar},
+{$codeBodyNormalize}                        },
                     });
-                    loading.close();
-                    this.loading = false;
+
                     if (response.ok) {
-                        showAlert('success', '¡Éxito!', 'Registro creado correctamente', 1500);
-                        router.visit(route('{$pluralLower}.index'));
+                        showAlert('success', '¡Éxito!', '{$visibleSingular} {$actionPast} correctamente', 1500);
+                        router.visit(route('{$moduleCode}.index'));
                     } else {
                         const data = response.data;
-                        const message = data?.message || 'Ocurrió un error al crear el registro';
-                        showAlert('warning', 'Alerta', message, 3000);
+                        const message = data?.message || (data?.errors ? Object.values(data.errors || {}).flat().join(' ') : 'Ocurrió un error al {$actionVerb} el {$visibleSingular}');
+                        showAlert('error', 'Error', message, 3000);
                     }
                 } catch (error) {
-                    showAlert('error', 'Error inesperado', error?.message || 'Ocurrió un error al crear el registro', 3000);
+                    showAlert('error', 'Error inesperado', error?.message || 'Ocurrió un error al {$actionVerb} el {$visibleSingular}', 3000);
                 } finally {
                     this.loading = false;
                 }
             },
         },
-    };
+{$watch}    };
 </script>
 
 <template>
-    <Head title="Crear {$plural}" />
+    <Head title="{$action} {$visibleSingular}" />
     <Layout>
-        <PageHeader title="Crear {$plural}" pageTitle="{$plural}" />
+        <PageHeader title="{$action} {$visibleSingular}" pageTitle="{$visibleName}" />
         <div class="row">
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
-                        <h5 class="card-title mb-0">{$plural}</h5>
+                        <h5 class="card-title mb-0">{$visibleSingular}</h5>
                     </div>
                     <div class="card-body">
                         <form @submit.prevent="submitForm">
                             <div class="row g-3">
-                                <div class="col-12">
-                                    <label for="description" class="form-label">Descripción<span class="text-danger ms-1">*</span></label>
-                                    <input
-                                        v-model="form.description"
-                                        autocomplete="off"
-                                        type="text"
-                                        class="form-control"
-                                        placeholder="Ingrese descripción"
-                                        maxlength="191"
-                                        :class="{ 'field-error': formErrors.description }"
-                                        @input="clearFormError('description')"
-                                    >
+{$codeField}
+                                <div class="col-12 d-flex align-items-center">
+                                    <label class="form-check-label me-3" for="{$moduleCode}Status">Estado</label>
+                                    <div class="form-check form-switch form-switch-md" dir="ltr">
+{$statusInput}
+                                    </div>
                                 </div>
                             </div>
                             <div class="mt-4 text-end">
-                                <button type="button" @click="\$inertia.visit(route('{$pluralLower}.index'))" style="margin-right: 10px;" class="btn btn-light"><i class="me-1 ri-logout-circle-line align-bottom"></i>Cancelar</button>
-                                <button type="submit" class="btn btn-primary" :disabled="loading"><i class="ri-save-line align-bottom me-1"></i>Guardar</button>
+                                <button type="button" class="btn btn-light me-2" @click="confirmCancel">Cancelar</button>
+                                <button type="submit" class="btn btn-primary" :disabled="loading">
+                                    <span v-if="loading" class="spinner-border spinner-border-sm me-2" role="status"></span>
+                                    {{ loading ? "{$submitBusy}" : "{$submitIdle}" }}
+                                </button>
                             </div>
                         </form>
                     </div>
@@ -1329,167 +2638,41 @@ VUE;
     }
 </style>
 VUE;
-        File::put("{$pagesPath}/Create.vue", $createContent);
-        $this->recordCreated("resources/js/Pages/{$moduleNamePlural}/Create.vue");
-
-        // ===== Edit.vue =====
-        $editContent = <<<VUE
-<script>
-    import Layout from "@/Layouts/main.vue";
-    import PageHeader from "@/Components/page-header.vue";
-    import { router } from '@inertiajs/vue3';
-    import { useAlert } from '@/Composables/useSweetAlert.js';
-    import { useFetchPetition } from '@/Composables/useFetchPetition.js';
-
-    const { showAlert, showLoading, showConfirm } = useAlert();
-    const { fetchPetition } = useFetchPetition();
-
-    export default {
-        name: '{$plural}Edit',
-        components: {
-            Layout,
-            PageHeader,
-        },
-        props: {
-            uuid: {
-                type: String,
-                required: true,
-            },
-            {$editProp}: {
-                type: Object,
-                required: true,
-            },
-        },
-        data() {
-            return {
-                form: {
-                    description: '',
-                },
-                loading: false,
-                formErrors: {},
-            };
-        },
-        methods: {
-            collectRequiredFieldErrors() {
-                const e = {};
-                const f = this.form;
-                if (!f.description || String(f.description).trim() === '') e.description = true;
-                return e;
-            },
-            clearFormError(field) {
-                if (this.formErrors[field]) {
-                    const next = { ...this.formErrors };
-                    delete next[field];
-                    this.formErrors = next;
-                }
-            },
-            async submitForm() {
-                this.formErrors = {};
-                try {
-                    const requiredErrors = this.collectRequiredFieldErrors();
-                    if (Object.keys(requiredErrors).length > 0) {
-                        this.formErrors = requiredErrors;
-                        await this.\$nextTick();
-                        await showAlert('warning', '¡Alerta!', 'Campos sin diligenciar. Revise los campos resaltados.', 2500);
-                        return;
-                    }
-                    const confirmed = await showConfirm(
-                        'warning',
-                        '¡Alerta!',
-                        '¿Está seguro que desea editar este registro?',
-                        'Sí, editar'
-                    );
-                    if (!confirmed) return;
-                    const loading = showLoading("Editando registro", "Por favor espera...");
-                    this.loading = true;
-                    const response = await fetchPetition(route('{$pluralLower}.update', this.uuid), {
-                        method: 'PUT',
-                        body: this.form,
-                    });
-                    loading.close();
-                    this.loading = false;
-                    if (response.ok) {
-                        showAlert('success', '¡Éxito!', 'Registro editado correctamente', 1500);
-                        router.visit(route('{$pluralLower}.index'));
-                    } else {
-                        const data = response.data;
-                        const message = data?.message || 'Ocurrió un error al editar el registro';
-                        showAlert('error', 'Error', message, 3000);
-                    }
-                } catch (error) {
-                    showAlert('error', 'Error inesperado', error?.message || 'Ocurrió un error al editar el registro', 3000);
-                } finally {
-                    this.loading = false;
-                }
-            },
-        },
-        watch: {
-            {$editProp}: {
-                immediate: true,
-                handler(val) {
-                    this.form = {
-                        description: val?.description ?? '',
-                    };
-                },
-            },
-        },
-    };
-</script>
-
-<template>
-    <Head title="Editar {$plural}" />
-    <Layout>
-        <PageHeader title="Editar {$plural}" pageTitle="{$plural}" />
-        <div class="row">
-            <div class="col-lg-12">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">{$plural}</h5>
-                    </div>
-                    <div class="card-body">
-                        <form @submit.prevent="submitForm">
-                            <div class="row g-3">
-                                <div class="col-12">
-                                    <label for="description" class="form-label">Descripción<span class="text-danger ms-1">*</span></label>
-                                    <input
-                                        v-model="form.description"
-                                        autocomplete="off"
-                                        type="text"
-                                        class="form-control"
-                                        placeholder="Ingrese descripción"
-                                        maxlength="191"
-                                        :class="{ 'field-error': formErrors.description }"
-                                        @input="clearFormError('description')"
-                                    >
-                                </div>
-                            </div>
-                            <div class="mt-4 text-end">
-                                <button type="button" @click="\$inertia.visit(route('{$pluralLower}.index'))" style="margin-right: 10px;" class="btn btn-light"><i class="me-1 ri-logout-circle-line align-bottom"></i>Cancelar</button>
-                                <button type="submit" class="btn btn-primary" :disabled="loading"><span v-if="loading" class="spinner-border spinner-border-sm me-2" role="status"></span><i class="ri-save-line align-bottom me-1"></i>Actualizar</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </Layout>
-</template>
-
-<style scoped>
-    .form-control.field-error {
-        border-color: #dc3545 !important;
-        background-image: none !important;
-        box-shadow: none !important;
     }
-</style>
-VUE;
-        File::put("{$pagesPath}/Edit.vue", $editContent);
-        $this->recordCreated("resources/js/Pages/{$moduleNamePlural}/Edit.vue");
 
-        // ===== Show.vue =====
-        $showContent = <<<VUE
+    private function buildVueShow(): string
+    {
+        extract($this->ctx);
+        /** @var string $plural @var string $moduleCode @var string $singularCamel @var bool $hasCode @var string $visibleName */
+
+        $visibleSingular = Str::singular($visibleName);
+
+        $codeBlock = $hasCode ? <<<HTML
+                            <div class="col-md-4 mb-1">
+                                <label class="form-label">Código</label>
+                                <p class="text-muted">
+                                    {{ {$singularCamel}.code || '' }}
+                                </p>
+                            </div>
+                            <div class="col-md-8 mb-1">
+                                <label class="form-label">Descripción</label>
+                                <p class="text-muted">
+                                    {{ {$singularCamel}.description || 'Sin descripción' }}
+                                </p>
+                            </div>
+HTML : <<<HTML
+                            <div class="col-md-12 mb-1">
+                                <label class="form-label">Descripción</label>
+                                <p class="text-muted">
+                                    {{ {$singularCamel}.description || 'Sin descripción' }}
+                                </p>
+                            </div>
+HTML;
+
+        return <<<VUE
 <script>
     import Layout from "@/Layouts/main.vue";
+
     import PageHeader from "@/Components/page-header.vue";
 
     export default {
@@ -1499,38 +2682,52 @@ VUE;
             PageHeader,
         },
         props: {
-            uuid: {
-                type: String,
-                required: true,
-            },
-            {$showProp}: {
+            {$singularCamel}: {
                 type: Object,
                 required: true,
+            },
+        },
+        methods: {
+            getStatusText(status) {
+                const texts = { 1: 'Activo', 0: 'Inactivo' };
+                return texts[status] || 'Desconocido';
+            },
+            getStatusClass(status) {
+                const classes = {
+                    1: 'badge bg-success-subtle text-success',
+                    0: 'badge bg-danger-subtle text-danger',
+                };
+                return classes[status] || 'bg-secondary-subtle';
             },
         },
     };
 </script>
 
 <template>
-    <Head title="Detalle {$plural}" />
+    <Head title="Detalle {$visibleSingular}" />
     <Layout>
-        <PageHeader title="Detalle {$plural}" pageTitle="{$plural}" />
+        <PageHeader title="Detalle {$visibleSingular}" pageTitle="{$visibleName}" />
         <div class="row">
             <div class="col-lg-12">
                 <div class="card">
                     <div class="card-header">
-                        <h5 class="card-title mb-0">{$plural}</h5>
+                        <h5 class="card-title mb-0">{$visibleSingular}</h5>
                     </div>
                     <div class="card-body">
                         <div class="row">
-                            <div class="col-md-12 mb-3">
-                                <label class="form-label">Descripción</label>
-                                <p class="text-muted">{{ {$showProp}.description }}</p>
+{$codeBlock}
+                            <div class="col-md-6 mb-1">
+                                <label class="form-label">Estado</label>
+                                <div>
+                                    <span class="badge" :class="getStatusClass({$singularCamel}.status)">
+                                        {{ getStatusText({$singularCamel}.status) }}
+                                    </span>
+                                </div>
                             </div>
                         </div>
                         <div class="row">
                             <div class="col-md-12 text-end">
-                                <button type="button" class="btn btn-light me-2" @click="\$inertia.visit(route('{$pluralLower}.index'))">
+                                <button type="button" class="btn btn-light me-2" @click="\$inertia.visit(route('{$moduleCode}.index'))">
                                     Volver
                                 </button>
                             </div>
@@ -1542,34 +2739,28 @@ VUE;
     </Layout>
 </template>
 VUE;
-        File::put("{$pagesPath}/Show.vue", $showContent);
-        $this->recordCreated("resources/js/Pages/{$moduleNamePlural}/Show.vue");
     }
 
     /**
-     * Create ServiceProvider
-     */
-    /**
      * Crea la estructura "DataBridge": el listado del módulo expuesto a otros
      * módulos mediante contratos Shared (List + Match), con su DTO, services y
-     * repositorio de listado autocontenido. Réplica del patrón de Concepts.
+     * repositorio de listado autocontenido.
      */
-    private function createDataBridge(
-        string $basePath,
-        string $moduleNamePlural,
-        string $moduleNameSingular,
-        string $tableName
-    ): void {
-        $modelName = $moduleNameSingular;
-        $listDto = "{$moduleNamePlural}ListDTO";
-        $listContract = "List{$moduleNamePlural}Contract";
-        $matchContract = "Match{$moduleNamePlural}RowContract";
-        $listService = "Fetch{$moduleNamePlural}ListService";
-        $matchService = "Match{$moduleNamePlural}RowService";
-        $listRepoInterface = "{$moduleNamePlural}ListRepositoryInterface";
-        $listRepoImpl = "Eloquent{$moduleNamePlural}ListRepository";
+    private function createDataBridge(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $shared @var string $plural @var string $singular @var string $table @var string $basePath @var bool $hasCode */
 
-        $sharedDir = $this->nsToPath($this->sharedNs)."/{$moduleNamePlural}";
+        $modelName = $singular;
+        $listDto = "{$plural}ListDTO";
+        $listContract = "List{$plural}Contract";
+        $matchContract = "Match{$plural}RowContract";
+        $listService = "List{$plural}Service";
+        $matchService = "Match{$plural}RowService";
+        $listRepoInterface = "{$plural}ListRepositoryInterface";
+        $listRepoImpl = "Eloquent{$plural}ListRepository";
+
+        $sharedDir = $this->nsToPath($this->sharedNs)."/{$plural}";
         $servicesPath = "{$basePath}/Application/Services";
         File::ensureDirectoryExists($sharedDir);
         File::ensureDirectoryExists($servicesPath);
@@ -1580,15 +2771,13 @@ VUE;
 
 declare(strict_types=1);
 
-namespace {$this->sharedNs}\\{$moduleNamePlural};
+namespace {$shared}\\{$plural};
 
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\DTOs\\{$listDto};
+use {$ns}\\{$plural}\\Application\\DTOs\\{$listDto};
 
 /**
- * Caso de uso: listar {$tableName} del tenant, filtrable y con paginación
+ * Caso de uso: listar {$table} del tenant, filtrable y con paginación
  * OPCIONAL. Sin paginar -> se devuelven todos.
- *
- * A diferencia de DataBridge NO recibe \$listing: el módulo dueño ES el listado.
  *
  * @see README.md en este directorio
  */
@@ -1602,7 +2791,7 @@ interface {$listContract}
 }
 PHP;
         File::put("{$sharedDir}/{$listContract}.php", $listContractContent);
-        $this->recordCreated("Shared/Contracts/{$moduleNamePlural}/{$listContract}.php");
+        $this->recordCreated("Shared/Contracts/{$plural}/{$listContract}.php");
 
         // ===== Shared: Match contract =====
         $matchContractContent = <<<PHP
@@ -1610,15 +2799,11 @@ PHP;
 
 declare(strict_types=1);
 
-namespace {$this->sharedNs}\\{$moduleNamePlural};
+namespace {$shared}\\{$plural};
 
 /**
  * Post-filtra las filas devueltas por {$listContract}::execute()->getData()
  * localizando la primera cuyo campo coincide EXACTAMENTE con el valor esperado.
- *
- * Los filtros de texto del listado usan coincidencia parcial (ILIKE), por lo
- * que execute() puede devolver varias filas; este contrato resuelve la fila
- * exacta por clave de negocio, o null si ninguna coincide.
  */
 interface {$matchContract}
 {
@@ -1630,17 +2815,17 @@ interface {$matchContract}
 }
 PHP;
         File::put("{$sharedDir}/{$matchContract}.php", $matchContractContent);
-        $this->recordCreated("Shared/Contracts/{$moduleNamePlural}/{$matchContract}.php");
+        $this->recordCreated("Shared/Contracts/{$plural}/{$matchContract}.php");
 
         // ===== Shared: README =====
         $readmeContent = <<<MD
-# Contrato {$moduleNamePlural} (`{$this->sharedNs}\\{$moduleNamePlural}`)
+# Contrato {$plural} (`{$this->sharedNs}\\{$plural}`)
 
-Lectura de `{$tableName}` para otros módulos, sin acoplarse al repositorio del
+Lectura de `{$table}` para otros módulos, sin acoplarse al repositorio del
 módulo dueño. Inspirado en el contrato de DataBridge, pero **sin `listing`** (el
 módulo ES el listado) y resolviendo contra el Eloquent propio.
 
-Implementación: `{$this->moduleNs}\\{$moduleNamePlural}\\Application\\Services\\{$listService}`.
+Implementación: `{$this->moduleNs}\\{$plural}\\Application\\Services\\{$listService}`.
 
 ## Firma
 
@@ -1657,38 +2842,14 @@ public function execute(?array \$filters = null, bool \$matchAny = false): {$lis
 | `search` | Búsqueda global en columnas no exactas |
 | `page` + `per_page` | Paginan. **Si faltan, devuelve TODOS sin límite** |
 
-`matchAny`: `false` (AND, por defecto) exige todas las columnas; `true` (OR) basta con una.
-
-## Respuesta
-
-`success / data / meta`. Cada fila en `data` con columnas en `camelCase` más el
-campo calculado `name`. Con paginación, `meta` incluye `current_page`,
-`per_page`, `last_page`.
-
 ## Post-filtro (`{$matchContract}`)
-
-Para obtener UNA fila exacta de la lista (los filtros de texto son parciales):
 
 ```php
 matchByField(array \$rows, string \$field, mixed \$expectedValue): ?array;
 ```
-
-## Ejemplos
-
-```php
-// Todos los registros (sin paginar)
-\$todos = \$this->list->execute()->getData();
-
-// Filtrado + paginado
-\$dto = \$this->list->execute(['description' => 'algo', 'page' => 1, 'per_page' => 15]);
-
-// Una sola fila: listar + post-filtrar exacto
-\$rows = \$this->list->execute(['uuid' => '...'])->getData();
-\$row = \$this->matchRow->matchByField(\$rows, 'uuid', '...');
-```
 MD;
         File::put("{$sharedDir}/README.md", $readmeContent);
-        $this->recordCreated("Shared/Contracts/{$moduleNamePlural}/README.md");
+        $this->recordCreated("Shared/Contracts/{$plural}/README.md");
 
         // ===== Module: List DTO =====
         $listDtoContent = <<<PHP
@@ -1696,7 +2857,7 @@ MD;
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\DTOs;
+namespace {$ns}\\{$plural}\\Application\\DTOs;
 
 use JsonSerializable;
 
@@ -1767,22 +2928,18 @@ PHP;
         File::put("{$basePath}/Application/DTOs/{$listDto}.php", $listDtoContent);
         $this->recordCreated("Application/DTOs/{$listDto}.php");
 
-        // ===== Module: Fetch list service =====
+        // ===== Module: List service =====
         $listServiceContent = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Services;
+namespace {$ns}\\{$plural}\\Application\\Services;
 
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\DTOs\\{$listDto};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories\\{$listRepoInterface};
-use {$this->sharedNs}\\{$moduleNamePlural}\\{$listContract};
+use {$ns}\\{$plural}\\Application\\DTOs\\{$listDto};
+use {$ns}\\{$plural}\\Domain\\Repositories\\{$listRepoInterface};
+use {$shared}\\{$plural}\\{$listContract};
 
-/**
- * Service de listado del módulo {$moduleNamePlural}. Sin match ni \$listing:
- * un módulo = un listado. Arma el query y delega en el repositorio.
- */
 final class {$listService} implements {$listContract}
 {
     public function __construct(
@@ -1807,9 +2964,9 @@ PHP;
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Services;
+namespace {$ns}\\{$plural}\\Application\\Services;
 
-use {$this->sharedNs}\\{$moduleNamePlural}\\{$matchContract};
+use {$shared}\\{$plural}\\{$matchContract};
 
 final class {$matchService} implements {$matchContract}
 {
@@ -1820,12 +2977,23 @@ final class {$matchService} implements {$matchContract}
                 continue;
             }
 
-            if ((\$row[\$field] ?? null) === \$expectedValue) {
+            \$actual = \$row[\$field] ?? null;
+            if (\$this->valuesMatch(\$actual, \$expectedValue)) {
                 return \$row;
             }
         }
 
         return null;
+    }
+
+    private function valuesMatch(mixed \$actual, mixed \$expected): bool
+    {
+        if (is_string(\$actual) && is_string(\$expected)) {
+            // char(N) en PostgreSQL rellena con espacios; comparar el valor de negocio.
+            return rtrim(\$actual) === rtrim(\$expected);
+        }
+
+        return \$actual === \$expected;
     }
 }
 PHP;
@@ -1838,10 +3006,10 @@ PHP;
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories;
+namespace {$ns}\\{$plural}\\Domain\\Repositories;
 
 /**
- * Contrato de listado de `{$tableName}` al estilo DataBridge: un módulo = un
+ * Contrato de listado de `{$table}` al estilo DataBridge: un módulo = un
  * listado, con filtros por columna, búsqueda global y paginación OPCIONAL.
  */
 interface {$listRepoInterface}
@@ -1857,15 +3025,23 @@ PHP;
         $this->recordCreated("Domain/Repositories/{$listRepoInterface}.php");
 
         // ===== Module: Eloquent list repository =====
+        // Campo calculado según haya code.
+        $extraFields = $hasCode
+            ? "        return [\n            'codeAndDescription' => \$row->getAttribute('code').' - '.\$row->getAttribute('description'),\n        ];"
+            : "        return [\n            'name' => (string) \$row->getAttribute('description'),\n        ];";
+        $codeNormalize = $hasCode
+            ? "        // char(N) llega con padding; el code de negocio no debe llevar espacios.\n        if (\$column === 'code' && is_string(\$value)) {\n            return rtrim(\$value);\n        }\n"
+            : '';
+
         $listRepoImplContent = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Database\\Repositories;
+namespace {$ns}\\{$plural}\\Infrastructure\\Database\\Repositories;
 
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories\\{$listRepoInterface};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Database\\Models\\{$modelName};
+use {$ns}\\{$plural}\\Domain\\Repositories\\{$listRepoInterface};
+use {$ns}\\{$plural}\\Infrastructure\\Database\\Models\\{$modelName};
 use App\\Shared\\Infrastructure\\Database\\Repositories\\BaseSearchRepository;
 use Illuminate\\Database\\Eloquent\\Collection;
 use Illuminate\\Database\\Eloquent\\Model;
@@ -1875,7 +3051,7 @@ use Illuminate\\Support\\Str;
 /**
  * Lógica de listado AUTOCONTENIDA: filtros + paginación opcional + mapeo
  * dinámico snake_case -> camelCase. Replica el lookup de DataBridge contra el
- * modelo propio del módulo ({$modelName}, tabla {$tableName}).
+ * modelo propio del módulo ({$modelName}, tabla {$table}).
  */
 final class {$listRepoImpl} implements {$listRepoInterface}
 {
@@ -1888,8 +3064,13 @@ final class {$listRepoImpl} implements {$listRepoInterface}
 
         \$builder = {$modelName}::query();
         BaseSearchRepository::applyPaginateColumnFilters(
-            \$builder, \$filters, \$this->allowedColumns(), '', \$matchAny
+            \$builder,
+            \$filters,
+            \$this->allowedColumns(),
         );
+        // TODO: propagar \$matchAny cuando BaseSearchRepository lo soporte (hoy sólo aplica AND).
+        unset(\$matchAny);
+
         \$builder->orderBy('created_at', 'desc');
 
         // Sin page/per_page -> TODOS los registros, sin límite.
@@ -1954,19 +3135,13 @@ final class {$listRepoImpl} implements {$listRepoInterface}
     }
 
     /**
-     * Campos calculados propios del módulo. `name` es la etiqueta lista para
-     * selects; ajústelo según las columnas reales del módulo.
+     * Campos calculados propios del módulo (etiqueta lista para selects).
      *
      * @return array<string, mixed>
      */
     private function extraFields(Model \$row): array
     {
-        \$description = (string) (\$row->getAttribute('description') ?? '');
-        \$name = \$description !== '' ? \$description : '{$modelName} #'.(int) \$row->getAttribute('id');
-
-        return [
-            'name' => \$name,
-        ];
+{$extraFields}
     }
 
     private function normalizeValue(string \$column, mixed \$value): mixed
@@ -1980,7 +3155,7 @@ final class {$listRepoImpl} implements {$listRepoInterface}
         if (str_ends_with(\$column, '_date')) {
             return Carbon::parse((string) \$value)->format('Y-m-d');
         }
-
+{$codeNormalize}
         return \$value;
     }
 }
@@ -1989,37 +3164,45 @@ PHP;
         $this->recordCreated("Infrastructure/Database/Repositories/{$listRepoImpl}.php");
     }
 
-    private function createServiceProvider(
-        string $basePath,
-        string $moduleNamePlural,
-        string $moduleNameLower,
-        string $moduleNameSingular
-    ): void {
-        $serviceProviderName = "{$moduleNamePlural}ServiceProvider";
-        $repositoryInterface = "{$moduleNameSingular}RepositoryInterface";
-        $repositoryImplementation = "Eloquent{$moduleNameSingular}Repository";
-        $listRepositoryInterface = "{$moduleNamePlural}ListRepositoryInterface";
-        $listRepositoryImplementation = "Eloquent{$moduleNamePlural}ListRepository";
-        $listContract = "List{$moduleNamePlural}Contract";
-        $listService = "Fetch{$moduleNamePlural}ListService";
-        $matchContract = "Match{$moduleNamePlural}RowContract";
-        $matchService = "Match{$moduleNamePlural}RowService";
+    private function createServiceProvider(): void
+    {
+        extract($this->ctx);
+        /** @var string $ns @var string $shared @var string $plural @var string $singular @var string $basePath */
+
+        $serviceProviderName = "{$plural}ServiceProvider";
+        $repositoryInterface = "{$singular}RepositoryInterface";
+        $repositoryImplementation = "Eloquent{$singular}Repository";
+        $listRepositoryInterface = "{$plural}ListRepositoryInterface";
+        $listRepositoryImplementation = "Eloquent{$plural}ListRepository";
+        $listContract = "List{$plural}Contract";
+        $listService = "List{$plural}Service";
+        $matchContract = "Match{$plural}RowContract";
+        $matchService = "Match{$plural}RowService";
 
         $content = <<<PHP
 <?php
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural};
+namespace {$ns}\\{$plural};
 
 use Illuminate\\Support\\ServiceProvider;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories\\{$repositoryInterface};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Database\\Repositories\\{$repositoryImplementation};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories\\{$listRepositoryInterface};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Database\\Repositories\\{$listRepositoryImplementation};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Services\\{$listService};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Services\\{$matchService};
-use {$this->sharedNs}\\{$moduleNamePlural}\\{$listContract};
-use {$this->sharedNs}\\{$moduleNamePlural}\\{$matchContract};
+use {$ns}\\{$plural}\\Domain\\Repositories\\{
+    {$repositoryInterface},
+    {$listRepositoryInterface},
+};
+use {$ns}\\{$plural}\\Infrastructure\\Database\\Repositories\\{
+    {$repositoryImplementation},
+    {$listRepositoryImplementation},
+};
+use {$ns}\\{$plural}\\Application\\Services\\{
+    {$listService},
+    {$matchService},
+};
+
+use {$shared}\\{$plural}\\{
+    {$listContract},
+    {$matchContract},
+};
 
 final class {$serviceProviderName} extends ServiceProvider
 {
@@ -2027,10 +3210,18 @@ final class {$serviceProviderName} extends ServiceProvider
     {
         \$this->app->bind({$repositoryInterface}::class, {$repositoryImplementation}::class);
 
-        // DataBridge: listado del módulo expuesto a otros módulos vía contrato Shared.
-        \$this->app->singleton({$listRepositoryInterface}::class, {$listRepositoryImplementation}::class);
-        \$this->app->singleton({$listContract}::class, {$listService}::class);
-        \$this->app->singleton({$matchContract}::class, {$matchService}::class);
+        \$this->app->singleton(
+            {$listRepositoryInterface}::class,
+            {$listRepositoryImplementation}::class,
+        );
+        \$this->app->singleton(
+            {$listContract}::class,
+            {$listService}::class,
+        );
+        \$this->app->singleton(
+            {$matchContract}::class,
+            {$matchService}::class,
+        );
     }
 
     public function boot(): void
@@ -2040,473 +3231,80 @@ final class {$serviceProviderName} extends ServiceProvider
     }
 }
 PHP;
-        
+
         File::put("{$basePath}/{$serviceProviderName}.php", $content);
         $this->recordCreated("{$serviceProviderName}.php");
     }
-    
+
     /**
-     * Create .gitkeep files in empty directories
+     * Genera el test unitario del List Service en Suite (Pest + Mockery).
      */
-    /**
-     * Create Repository Interface
-     */
-    private function createRepositoryInterface(
-        string $basePath,
-        string $moduleNamePlural,
-        string $moduleNameSingular
-    ): void {
-        $interfaceName = "{$moduleNameSingular}RepositoryInterface";
-        $content = <<<PHP
-<?php
-
-declare(strict_types=1);
-
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories;
-
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Entities\\{$moduleNameSingular};
-
-interface {$interfaceName}
-{
-    public function findByUuid(string \$uuid): ?{$moduleNameSingular};
-
-    public function list(array \$filters = []): array;
-
-    public function save({$moduleNameSingular} \$entity): {$moduleNameSingular};
-
-    public function update({$moduleNameSingular} \$entity): void;
-
-    public function delete(string \$id): void;
-}
-PHP;
-
-        File::put("{$basePath}/Domain/Repositories/{$interfaceName}.php", $content);
-        $this->recordCreated("Domain/Repositories/{$interfaceName}.php");
-    }
-    
-    /**
-     * Create Repository Implementation
-     */
-    private function createRepositoryImplementation(
-        string $basePath,
-        string $moduleNamePlural,
-        string $moduleNameSingular,
-        string $moduleNameLower,
-        string $moduleNamePluralLower
-    ): void {
-        $repositoryName = "Eloquent{$moduleNameSingular}Repository";
-        $interfaceName = "{$moduleNameSingular}RepositoryInterface";
-        $modelName = $moduleNameSingular;
-        $entityAlias = "{$moduleNameSingular}Entity";
-
-        $content = <<<PHP
-<?php
-
-declare(strict_types=1);
-
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Database\\Repositories;
-
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Repositories\\{$interfaceName};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Entities\\{$moduleNameSingular} as {$entityAlias};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Database\\Models\\{$modelName};
-use Illuminate\\Support\\Facades\\DB;
-
-final class {$repositoryName} implements {$interfaceName}
-{
-    public function findByUuid(string \$uuid): ?{$entityAlias}
+    private function createListServiceTest(string $suitePath): void
     {
-        \$m = {$modelName}::where('uuid', \$uuid)->first();
+        extract($this->ctx);
+        /** @var string $ns @var string $plural @var bool $hasCode */
 
-        return \$m ? \$this->toDomain(\$m) : null;
-    }
+        $dir = "{$suitePath}/tests/Unit/{$plural}";
+        File::ensureDirectoryExists($dir);
 
-    public function save({$entityAlias} \$p): {$entityAlias}
-    {
-        return DB::transaction(function () use (\$p) {
-            \$m = new {$modelName}();
-            \$m->uuid = \$p->uuid();
-            \$m->description = \$p->description();
-            \$m->created_by = \$p->createdBy();
-            \$m->updated_by = \$p->updatedBy();
-            \$m->created_at = now();
-            \$m->updated_at = now();
-            \$m->save();
-            \$m->refresh();
+        $listService = "List{$plural}Service";
+        $listRepoInterface = "{$plural}ListRepositoryInterface";
 
-            return \$this->toDomain(\$m);
-        });
-    }
-
-    public function update({$entityAlias} \$u): void
-    {
-        \$m = {$modelName}::where('uuid', \$u->uuid())->first();
-
-        if (\$m) {
-            \$m->description = \$u->description();
-            \$m->updated_by = \$u->updatedBy();
-            \$m->updated_at = now();
-            \$m->save();
-        }
-    }
-
-    public function delete(string \$id): void
-    {
-        {$modelName}::where('id', \$id)->delete();
-    }
-
-    public function list(array \$filters = []): array
-    {
-        \$q = {$modelName}::query();
-
-        if (!empty(\$filters['search'])) {
-            \$s = \$filters['search'];
-            \$q->where('description', 'like', "%{\$s}%");
+        if ($hasCode) {
+            $filterKey = 'code';
+            $secondFilter = "['code' => '001', 'description' => 'Ejemplo', 'match_any' => true]";
+            $secondExecute = "['code' => '001', 'description' => 'Ejemplo']";
+            $row = "['id' => 1, 'code' => '001', 'description' => 'Ejemplo', 'codeAndDescription' => '001 - Ejemplo']";
+            $extraKey = 'codeAndDescription';
+            $extraValue = '001 - Ejemplo';
+        } else {
+            $filterKey = 'description';
+            $secondFilter = "['description' => 'Ejemplo', 'status' => '1', 'match_any' => true]";
+            $secondExecute = "['description' => 'Ejemplo', 'status' => '1']";
+            $row = "['id' => 1, 'description' => 'Ejemplo', 'name' => 'Ejemplo']";
+            $extraKey = 'name';
+            $extraValue = 'Ejemplo';
         }
 
-        \$total = (clone \$q)->count();
-
-        \$page = (int) (\$filters['page'] ?? 1);
-        \$perPage = (int) (\$filters['per_page'] ?? 15);
-
-        \$rows = \$q->orderByDesc('created_at')
-            ->forPage(\$page, \$perPage)
-            ->get();
-
-        return [
-            'data' => array_map(fn(\$m) => \$this->toDomain(\$m), \$rows->all()),
-            'total' => \$total,
-        ];
-    }
-
-    private function toDomain({$modelName} \$m): {$entityAlias}
-    {
-        return new {$entityAlias}(
-            id: (int) \$m->id,
-            uuid: \$m->uuid,
-            description: \$m->description,
-            createdBy: (string) \$m->created_by,
-            updatedBy: \$m->updated_by !== null ? (string) \$m->updated_by : null,
-            createdAt: new \\DateTimeImmutable(\$m->created_at?->toAtomString() ?? 'now'),
-            updatedAt: \$m->updated_at ? new \\DateTimeImmutable(\$m->updated_at->toAtomString()) : null,
-            deletedAt: \$m->deleted_at ? new \\DateTimeImmutable(\$m->deleted_at->toAtomString()) : null,
-        );
-    }
-}
-PHP;
-
-        File::put("{$basePath}/Infrastructure/Database/Repositories/{$repositoryName}.php", $content);
-        $this->recordCreated("Infrastructure/Database/Repositories/{$repositoryName}.php");
-    }
-    
-    /**
-     * Create NotFoundException
-     */
-    private function createNotFoundException(
-        string $basePath,
-        string $moduleNamePlural,
-        string $moduleNameSingular
-    ): void {
-        $exceptionName = "{$moduleNameSingular}NotFoundException";
         $content = <<<PHP
 <?php
 
 declare(strict_types=1);
 
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Domain\\Exceptions;
+use {$ns}\\{$plural}\\Application\\Services\\{$listService};
+use {$ns}\\{$plural}\\Domain\\Repositories\\{$listRepoInterface};
 
-use Exception;
-
-final class {$exceptionName} extends Exception
-{
-    public static function withUuid(string \$uuid): self
-    {
-        return new self("{$moduleNameSingular} con UUID {\$uuid} no encontrado");
-    }
-}
-PHP;
-        
-        File::put("{$basePath}/Domain/Exceptions/{$exceptionName}.php", $content);
-        $this->recordCreated("Domain/Exceptions/{$exceptionName}.php");
-    }
-    
-    /**
-     * Create Controller with empty methods
-     */
-    private function createController(
-        string $basePath,
-        string $moduleNamePlural,
-        string $moduleNameSingular,
-        string $moduleNamePluralLower,
-        string $moduleNameSingularLower
-    ): void {
-        $controllerName = "{$moduleNameSingular}Controller";
-        $inertiaFolder = $moduleNamePlural;
-        $listHandler = "List{$moduleNamePlural}Handler";
-        $getHandler = "Get{$moduleNameSingular}ByUuidHandler";
-        $createHandler = "Create{$moduleNameSingular}Handler";
-        $updateHandler = "Update{$moduleNameSingular}Handler";
-        $deleteHandler = "Delete{$moduleNameSingular}Handler";
-        $createCommand = "Create{$moduleNameSingular}Command";
-        $updateCommand = "Update{$moduleNameSingular}Command";
-        $deleteCommand = "Delete{$moduleNameSingular}Command";
-        $createRequest = "Create{$moduleNameSingular}Request";
-        $updateRequest = "Update{$moduleNameSingular}Request";
-        $filterRequest = "Filter{$moduleNamePlural}Request";
-        $indexProp = $moduleNamePluralLower;
-        $editProp = "{$moduleNameSingularLower}Edit";
-        $showProp = $moduleNameSingularLower;
-
-        $content = <<<PHP
-<?php
-
-declare(strict_types=1);
-
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Http\\Controllers;
-
-use App\\Http\\Controllers\\Controller;
-use Inertia\\Inertia;
-use Illuminate\\Support\\Facades\\Auth;
-
-use {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Http\\Requests\\{$createRequest};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Http\\Requests\\{$updateRequest};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Http\\Requests\\{$filterRequest};
-
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Handlers\\{$listHandler};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Handlers\\{$getHandler};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Handlers\\{$createHandler};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Handlers\\{$updateHandler};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Handlers\\{$deleteHandler};
-
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Commands\\{$createCommand};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Commands\\{$updateCommand};
-use {$this->moduleNs}\\{$moduleNamePlural}\\Application\\Commands\\{$deleteCommand};
-
-final class {$controllerName} extends Controller
-{
-    public function __construct(
-        private {$listHandler} \$listHandler,
-    ) {}
-
-    public function index({$filterRequest} \$request)
-    {
-        \$result = \$this->listHandler->handle(\$request->validated());
-
-        return Inertia::render('{$inertiaFolder}/Index', [
-            '{$indexProp}' => \$result->toArray(),
+it('devuelve todos los registros cuando no se pagina', function () {
+    \$repo = Mockery::mock({$listRepoInterface}::class);
+    \$repo->shouldReceive('list')
+        ->once()
+        ->with(['{$filterKey}' => '001', 'match_any' => false])
+        ->andReturn([
+            'success' => true,
+            'data' => [{$row}],
+            'meta' => ['total' => 1],
         ]);
-    }
 
-    public function viewCreate()
-    {
-        return Inertia::render('{$inertiaFolder}/Create', []);
-    }
+    \$dto = (new {$listService}(\$repo))->execute(['{$filterKey}' => '001']);
 
-    public function viewShow(string \$uuid, {$getHandler} \$handler)
-    {
-        \$dto = \$handler->handle(\$uuid);
+    expect(\$dto->isSuccess())->toBeTrue();
+    expect(\$dto->getData()[0]['{$extraKey}'])->toBe('{$extraValue}');
+    expect(\$dto->getMeta())->not->toHaveKey('current_page');
+});
 
-        return Inertia::render('{$inertiaFolder}/Show', [
-            'uuid' => \$uuid,
-            '{$showProp}' => \$dto->toArray(),
-        ]);
-    }
+it('propaga matchAny al query del repositorio', function () {
+    \$repo = Mockery::mock({$listRepoInterface}::class);
+    \$repo->shouldReceive('list')
+        ->once()
+        ->with({$secondFilter})
+        ->andReturn(['success' => true, 'data' => [], 'meta' => ['total' => 0]]);
 
-    public function viewEdit(string \$uuid, {$getHandler} \$handler)
-    {
-        \$dto = \$handler->handle(\$uuid);
-
-        return Inertia::render('{$inertiaFolder}/Edit', [
-            'uuid' => \$uuid,
-            '{$editProp}' => \$dto->toArray(),
-        ]);
-    }
-
-    public function store({$createRequest} \$request, {$createHandler} \$handler)
-    {
-        \$actorId = (string) (Auth::id() ?? 1);
-
-        \$command = new {$createCommand}(
-            description: \$request->input('description'),
-            createdBy: \$actorId,
-            updatedBy: \$actorId,
-        );
-
-        \$dto = \$handler->handle(\$command);
-
-        return response()->json(['data' => \$dto->toArray()], 201);
-    }
-
-    public function update(string \$uuid, {$updateRequest} \$request, {$updateHandler} \$handler)
-    {
-        \$actorId = (string) (Auth::id() ?? 1);
-
-        \$command = new {$updateCommand}(
-            uuid: \$uuid,
-            description: \$request->input('description'),
-            updatedBy: \$actorId,
-        );
-
-        \$dto = \$handler->handle(\$command);
-
-        return response()->json(['data' => \$dto->toArray()]);
-    }
-
-    public function destroy(string \$uuid, {$deleteHandler} \$handler)
-    {
-        \$handler->handle(new {$deleteCommand}(\$uuid));
-
-        return response()->json(['data' => ['message' => 'Registro eliminado correctamente']]);
-    }
-}
-PHP;
-
-        File::put("{$basePath}/Infrastructure/Http/Controllers/{$controllerName}.php", $content);
-        $this->recordCreated("Infrastructure/Http/Controllers/{$controllerName}.php");
-    }
-
-    /**
-     * Create Form Requests (Create, Update) from templates
-     */
-    private function createRequests(
-        string $requestsPath,
-        string $moduleNamePlural,
-        string $moduleNameSingular
-    ): void {
-        // Create
-        $createContent = <<<PHP
-<?php
-
-declare(strict_types=1);
-
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Http\\Requests;
-
-use Illuminate\\Foundation\\Http\\FormRequest;
-
-final class Create{$moduleNameSingular}Request extends FormRequest
-{
-    public function authorize(): bool
-    {
-        return true;
-    }
-
-    public function rules(): array
-    {
-        return [
-            'description' => ['required', 'string', 'max:191'],
-        ];
-    }
-}
-PHP;
-        File::put("{$requestsPath}/Create{$moduleNameSingular}Request.php", $createContent);
-        $this->recordCreated("Infrastructure/Http/Requests/Create{$moduleNameSingular}Request.php");
-
-        // Update
-        $updateContent = <<<PHP
-<?php
-
-declare(strict_types=1);
-
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Http\\Requests;
-
-use Illuminate\\Foundation\\Http\\FormRequest;
-
-final class Update{$moduleNameSingular}Request extends FormRequest
-{
-    public function authorize(): bool
-    {
-        return true;
-    }
-
-    public function rules(): array
-    {
-        return [
-            'description' => ['required', 'string', 'max:191'],
-        ];
-    }
-}
-PHP;
-        File::put("{$requestsPath}/Update{$moduleNameSingular}Request.php", $updateContent);
-        $this->recordCreated("Infrastructure/Http/Requests/Update{$moduleNameSingular}Request.php");
-
-        // Filter (listado: búsqueda + paginación)
-        $filterContent = <<<PHP
-<?php
-
-declare(strict_types=1);
-
-namespace {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Http\\Requests;
-
-use Illuminate\\Foundation\\Http\\FormRequest;
-
-/**
- * @group {$moduleNamePlural}
- *
- * Request para la filtración de {$moduleNamePlural}
- */
-final class Filter{$moduleNamePlural}Request extends FormRequest
-{
-    public function authorize(): bool
-    {
-        return true;
-    }
-
-    public function rules(): array
-    {
-        return [
-            'search' => ['sometimes', 'string', 'max:191'],
-            'page' => ['sometimes', 'integer', 'min:1'],
-            'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
-        ];
-    }
-}
-PHP;
-        File::put("{$requestsPath}/Filter{$moduleNamePlural}Request.php", $filterContent);
-        $this->recordCreated("Infrastructure/Http/Requests/Filter{$moduleNamePlural}Request.php");
-    }
-
-    /**
-     * Create Routes file
-     */
-    private function createRoutesFile(
-        string $basePath,
-        string $moduleNamePlural,
-        string $moduleNameLower,
-        string $moduleNamePluralLower,
-        string $moduleNameSingular
-    ): void {
-        $controllerName = "{$moduleNameSingular}Controller";
-        $routePrefix = $moduleNamePluralLower;
-        $routeNamePrefix = $moduleNamePluralLower;
-        $singularPrefix = $moduleNameLower;
-        $middleware = $this->renderRouteMiddleware();
-
-        $content = <<<PHP
-<?php
-
-declare(strict_types=1);
-
-use Illuminate\\Support\\Facades\\Route;
-use {$this->moduleNs}\\{$moduleNamePlural}\\Infrastructure\\Http\\Controllers\\{$controllerName};
-
-// Los nombres de ruta ('{$routeNamePrefix}.*') deben conservarse: el frontend los usa con route().
-// Los segmentos de URL ('/{$routePrefix}', '/{$singularPrefix}/...') pueden traducirse a español si se requiere.
-Route::middleware([{$middleware}])->group(function () {
-    Route::get('/{$routePrefix}', [{$controllerName}::class, 'index'])->name('{$routeNamePrefix}.index');
-
-    Route::get('/{$singularPrefix}/create', [{$controllerName}::class, 'viewCreate'])->name('{$routeNamePrefix}.create');
-    Route::post('/{$singularPrefix}', [{$controllerName}::class, 'store'])->name('{$routeNamePrefix}.store');
-
-    Route::get('/{$singularPrefix}/{uuid}/show', [{$controllerName}::class, 'viewShow'])->name('{$routeNamePrefix}.show');
-
-    Route::get('/{$singularPrefix}/{uuid}/edit', [{$controllerName}::class, 'viewEdit'])->name('{$routeNamePrefix}.edit');
-    Route::put('/{$singularPrefix}/{uuid}', [{$controllerName}::class, 'update'])->name('{$routeNamePrefix}.update');
-
-    Route::delete('/{$singularPrefix}/{uuid}', [{$controllerName}::class, 'destroy'])->name('{$routeNamePrefix}.destroy');
+    (new {$listService}(\$repo))->execute({$secondExecute}, true);
 });
 PHP;
 
-        File::put("{$basePath}/Infrastructure/Http/Routes/web.php", $content);
-        $this->recordCreated("Infrastructure/Http/Routes/web.php");
+        File::put("{$dir}/{$listService}Test.php", $content);
+        $this->recordCreated("Suite/tests/Unit/{$plural}/{$listService}Test.php");
     }
 
     /**
@@ -2552,4 +3350,3 @@ PHP;
         $this->recordCreated("config/app.php (provider {$moduleNamePlural}ServiceProvider)");
     }
 }
-
