@@ -31,8 +31,10 @@ final class DataBridgeGenerator extends Generator
         $base = $this->ctx->basePath;
         $sharedDir = $this->config->sharedPath($plural);
 
+        $singular = $this->ctx->singular;
+
         $names = [
-            'modelName' => $this->ctx->singular,
+            'modelName' => $singular,
             'listDto' => "{$plural}ListDTO",
             'listContract' => "List{$plural}Contract",
             'matchContract' => "Match{$plural}RowContract",
@@ -40,9 +42,21 @@ final class DataBridgeGenerator extends Generator
             'matchService' => "Match{$plural}RowService",
             'listRepoInterface' => "{$plural}ListRepositoryInterface",
             'listRepoImpl' => "Eloquent{$plural}ListRepository",
+            // Contratos y services de escritura (create/update/delete).
+            'createContract' => "Create{$singular}Contract",
+            'updateContract' => "Update{$singular}Contract",
+            'deleteContract' => "Delete{$singular}Contract",
+            'createService' => "Create{$singular}Service",
+            'updateService' => "Update{$singular}Service",
+            'deleteService' => "Delete{$singular}Service",
             // El README documenta los namespaces completos.
             'sharedNs' => $this->ctx->shared,
             'moduleNs' => $this->ctx->ns,
+        ];
+
+        $writeArgs = [
+            'codeArg' => $this->ctx->hasCode ? "            code: (string) (\$data['code'] ?? ''),\n" : '',
+            'extraArgs' => $this->extraDataArgs(),
         ];
 
         // ===== Contratos compartidos =====
@@ -57,6 +71,19 @@ final class DataBridgeGenerator extends Generator
             $this->render('databridge/match-contract', $names),
             "Shared/Contracts/{$plural}/{$names['matchContract']}.php",
         );
+
+        $writeContracts = [
+            'createContract' => 'databridge/create-contract',
+            'updateContract' => 'databridge/update-contract',
+            'deleteContract' => 'databridge/delete-contract',
+        ];
+        foreach ($writeContracts as $key => $stub) {
+            $this->writer->put(
+                "{$sharedDir}/{$names[$key]}.php",
+                $this->render($stub, $names),
+                "Shared/Contracts/{$plural}/{$names[$key]}.php",
+            );
+        }
 
         $this->writer->put(
             "{$sharedDir}/README.md",
@@ -83,6 +110,26 @@ final class DataBridgeGenerator extends Generator
             "Application/Services/{$names['matchService']}.php",
         );
 
+        // Services de escritura: create y update mapean el payload a su Command;
+        // delete solo delega el uuid.
+        $this->writer->put(
+            "{$base}/Application/Services/{$names['createService']}.php",
+            $this->render('databridge/create-service', array_merge($names, $writeArgs)),
+            "Application/Services/{$names['createService']}.php",
+        );
+
+        $this->writer->put(
+            "{$base}/Application/Services/{$names['updateService']}.php",
+            $this->render('databridge/update-service', array_merge($names, $writeArgs)),
+            "Application/Services/{$names['updateService']}.php",
+        );
+
+        $this->writer->put(
+            "{$base}/Application/Services/{$names['deleteService']}.php",
+            $this->render('databridge/delete-service', $names),
+            "Application/Services/{$names['deleteService']}.php",
+        );
+
         // ===== Módulo: repositorio de listado =====
         $this->writer->put(
             "{$base}/Domain/Repositories/{$names['listRepoInterface']}.php",
@@ -94,6 +141,20 @@ final class DataBridgeGenerator extends Generator
             "{$base}/Infrastructure/Database/Repositories/{$names['listRepoImpl']}.php",
             $this->render('databridge/eloquent-list-repository', array_merge($names, $this->listRepoFragments())),
             "Infrastructure/Database/Repositories/{$names['listRepoImpl']}.php",
+        );
+    }
+
+    /**
+     * Líneas que mapean cada campo extra del payload plano al Command, para los
+     * services de create y update. Los no nulos se castean a string; los nulables
+     * pasan null si la clave no viene.
+     */
+    private function extraDataArgs(): string
+    {
+        return $this->fieldBlock(
+            fn ($field): string => $field->nullable
+                ? "            {$field->camel()}: \$data['{$field->name}'] ?? null,"
+                : "            {$field->camel()}: (string) (\$data['{$field->name}'] ?? ''),",
         );
     }
 

@@ -27,6 +27,12 @@ final class ProviderGenerator extends Generator
             'listService' => "List{$plural}Service",
             'matchContract' => "Match{$plural}RowContract",
             'matchService' => "Match{$plural}RowService",
+            'createContract' => "Create{$singular}Contract",
+            'updateContract' => "Update{$singular}Contract",
+            'deleteContract' => "Delete{$singular}Contract",
+            'createService' => "Create{$singular}Service",
+            'updateService' => "Update{$singular}Service",
+            'deleteService' => "Delete{$singular}Service",
         ]);
 
         $this->writer->put(

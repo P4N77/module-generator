@@ -1,0 +1,30 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Services;
+
+use %%ns%%\%%plural%%\Application\Commands\Create%%singular%%Command;
+use %%ns%%\%%plural%%\Application\Handlers\Create%%singular%%Handler;
+use %%shared%%\%%plural%%\%%createContract%%;
+
+/**
+ * Expone la creación de %%visibleLower%% a otros módulos: traduce el payload plano
+ * al Command del módulo, que no cruza el borde.
+ */
+final class %%createService%% implements %%createContract%%
+{
+    public function __construct(private readonly Create%%singular%%Handler $handler) {}
+
+    public function execute(array $data): array
+    {
+        $command = new Create%%singular%%Command(
+%%codeArg%%            description: $data['description'] ?? null,
+%%extraArgs%%            status: (bool) ($data['status'] ?? true),
+            createdBy: (string) ($data['actor_id'] ?? ''),
+            updatedBy: (string) ($data['actor_id'] ?? ''),
+        );
+
+        return $this->handler->handle($command)->toArray();
+    }
+}

@@ -1,0 +1,19 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%shared%%\%%plural%%;
+
+/**
+ * Caso de uso: eliminar (soft delete) un(a) %%visibleSingular%% (%%table%%) desde otro
+ * módulo.
+ *
+ * Implementación: %%ns%%\%%plural%%\Application\Services\%%deleteService%%
+ */
+interface %%deleteContract%%
+{
+    /**
+     * @param  string  $uuid  Registro a eliminar.
+     */
+    public function execute(string $uuid): void;
+}

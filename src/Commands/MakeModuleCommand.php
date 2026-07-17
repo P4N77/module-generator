@@ -55,6 +55,16 @@ class MakeModuleCommand extends Command
 
         $naming = ModuleNaming::fromArgument((string) $this->argument('name'), $config->tablePrefix);
 
+        // El proyecto destino debe tener la estructura base (módulos, DataBridge y
+        // páginas Vue). Si falta algo, el módulo no funcionaría bien.
+        $missing = $this->missingStructure($config);
+        if ($missing !== []) {
+            $console->missingStructure($missing);
+            if (! $this->confirm('¿Continuar de todos modos y crear las carpetas faltantes?', false)) {
+                return Command::FAILURE;
+            }
+        }
+
         $conflicts = $this->existingPaths($naming->plural, $config);
         if ($conflicts !== []) {
             $console->moduleExists($naming->plural, $conflicts);
@@ -197,6 +207,24 @@ class MakeModuleCommand extends Command
             $pluralSnake,                                                     // tests
             $singularSnake,                                                   // test
         ]));
+    }
+
+    /**
+     * Carpetas base que el proyecto destino debería tener para que el módulo
+     * funcione (raíz de módulos, base DataBridge y páginas Vue). Devuelve las que
+     * faltan, con una etiqueta legible.
+     *
+     * @return array<string, string> etiqueta => ruta ausente
+     */
+    private function missingStructure(GeneratorConfig $config): array
+    {
+        $required = [
+            'Raíz de módulos' => $config->moduleBasePath(),
+            'DataBridge (contratos compartidos)' => $config->sharedBasePath(),
+            'Páginas Vue' => $config->pagesBasePath(),
+        ];
+
+        return array_filter($required, static fn (string $path): bool => ! File::isDirectory($path));
     }
 
     /**

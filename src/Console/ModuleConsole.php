@@ -137,6 +137,22 @@ final class ModuleConsole
     }
 
     /**
+     * Avisa que faltan carpetas base del proyecto destino.
+     *
+     * @param  array<string, string>  $missing  etiqueta => ruta ausente
+     */
+    public function missingStructure(array $missing): void
+    {
+        $this->command->newLine();
+        $this->components->warn('El proyecto destino no tiene toda la estructura base esperada:');
+        foreach ($missing as $label => $path) {
+            $this->components->twoColumnDetail("<fg=yellow>{$label}</>", "<fg=gray>{$path}</>");
+        }
+        $this->command->line('  <fg=gray>Verifica que estás en un proyecto del ecosistema (Suite/Iris/…).</>');
+        $this->command->newLine();
+    }
+
+    /**
      * Informa que el módulo ya existe y no se generó nada.
      *
      * @param  list<string>  $conflicts

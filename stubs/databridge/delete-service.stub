@@ -1,0 +1,23 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Services;
+
+use %%ns%%\%%plural%%\Application\Commands\Delete%%singular%%Command;
+use %%ns%%\%%plural%%\Application\Handlers\Delete%%singular%%Handler;
+use %%shared%%\%%plural%%\%%deleteContract%%;
+
+/**
+ * Expone la eliminación de %%visibleLower%% a otros módulos, delegando en el Handler
+ * del módulo, que no cruza el borde.
+ */
+final class %%deleteService%% implements %%deleteContract%%
+{
+    public function __construct(private readonly Delete%%singular%%Handler $handler) {}
+
+    public function execute(string $uuid): void
+    {
+        $this->handler->handle(new Delete%%singular%%Command($uuid));
+    }
+}

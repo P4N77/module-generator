@@ -1,0 +1,23 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%shared%%\%%plural%%;
+
+/**
+ * Caso de uso: actualizar un(a) %%visibleSingular%% existente (%%table%%) desde otro
+ * módulo.
+ *
+ * El payload viaja como arreglo con las mismas claves snake_case que devuelve
+ * %%singular%%DTO, para no exponer los Commands del módulo dueño fuera de él.
+ *
+ * Implementación: %%ns%%\%%plural%%\Application\Services\%%updateService%%
+ */
+interface %%updateContract%%
+{
+    /**
+     * @param  array<string, mixed>  $data  Igual que create más `uuid`; opcional `actor_id`.
+     * @return array<string, mixed> Registro actualizado, serializado con %%singular%%DTO
+     */
+    public function execute(array $data): array;
+}

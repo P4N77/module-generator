@@ -45,6 +45,24 @@ final class GeneratorConfig
         return $this->namespaceToPath($this->sharedContractsNamespace)."/{$plural}";
     }
 
+    /** app/Modules — raíz donde viven los módulos. */
+    public function moduleBasePath(): string
+    {
+        return $this->namespaceToPath($this->moduleNamespace);
+    }
+
+    /** app/Shared/Contracts — base de los contratos DataBridge. */
+    public function sharedBasePath(): string
+    {
+        return $this->namespaceToPath($this->sharedContractsNamespace);
+    }
+
+    /** resources/js/Pages — base de las páginas Inertia/Vue. */
+    public function pagesBasePath(): string
+    {
+        return resource_path("js/{$this->pagesPath}");
+    }
+
     /** resources/js/Pages/EmailTypes */
     public function pagesDir(string $plural): string
     {

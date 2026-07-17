@@ -1,0 +1,30 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Services;
+
+use %%ns%%\%%plural%%\Application\Commands\Update%%singular%%Command;
+use %%ns%%\%%plural%%\Application\Handlers\Update%%singular%%Handler;
+use %%shared%%\%%plural%%\%%updateContract%%;
+
+/**
+ * Expone la actualización de %%visibleLower%% a otros módulos: traduce el payload
+ * plano al Command del módulo, que no cruza el borde.
+ */
+final class %%updateService%% implements %%updateContract%%
+{
+    public function __construct(private readonly Update%%singular%%Handler $handler) {}
+
+    public function execute(array $data): array
+    {
+        $command = new Update%%singular%%Command(
+            uuid: (string) ($data['uuid'] ?? ''),
+%%codeArg%%            description: $data['description'] ?? null,
+%%extraArgs%%            status: isset($data['status']) ? (string) $data['status'] : '1',
+            actorId: isset($data['actor_id']) ? (string) $data['actor_id'] : null,
+        );
+
+        return $this->handler->handle($command)->toArray();
+    }
+}

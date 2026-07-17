@@ -15,11 +15,17 @@ use %%ns%%\%%plural%%\Infrastructure\Database\Repositories\{
 use %%ns%%\%%plural%%\Application\Services\{
     %%listService%%,
     %%matchService%%,
+    %%createService%%,
+    %%updateService%%,
+    %%deleteService%%,
 };
 
 use %%shared%%\%%plural%%\{
     %%listContract%%,
     %%matchContract%%,
+    %%createContract%%,
+    %%updateContract%%,
+    %%deleteContract%%,
 };
 
 final class %%serviceProviderName%% extends ServiceProvider
@@ -39,6 +45,18 @@ final class %%serviceProviderName%% extends ServiceProvider
         $this->app->singleton(
             %%matchContract%%::class,
             %%matchService%%::class,
+        );
+        $this->app->singleton(
+            %%createContract%%::class,
+            %%createService%%::class,
+        );
+        $this->app->singleton(
+            %%updateContract%%::class,
+            %%updateService%%::class,
+        );
+        $this->app->singleton(
+            %%deleteContract%%::class,
+            %%deleteService%%::class,
         );
     }
 
