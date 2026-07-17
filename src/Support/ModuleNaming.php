@@ -26,6 +26,8 @@ final class ModuleNaming
         public readonly string $singularCamel,
         public readonly string $kebab,
         public readonly string $table,
+        /** Prefijo de Suite resuelto (del "prefijo/nombre" o de config), o null. */
+        public readonly ?string $prefix,
     ) {}
 
     /**
@@ -55,6 +57,7 @@ final class ModuleNaming
             singularCamel: Str::camel($singular),
             kebab: Str::kebab($plural),
             table: $prefix !== null ? "{$prefix}_{$pluralSnake}" : $pluralSnake,
+            prefix: $prefix,
         );
     }
 }

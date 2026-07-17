@@ -168,6 +168,19 @@ class MakeModuleCommand extends Command
     }
 
     /**
+     * Antepone el prefijo del comando al nombre de la tabla del SQL, salvo que ya
+     * lo traiga. El modelador exporta "test"; con prefijo "shd" queda "shd_test".
+     */
+    private function prefixedTable(string $sqlName, ?string $prefix): string
+    {
+        if ($prefix === null || $prefix === '' || str_starts_with($sqlName, "{$prefix}_")) {
+            return $sqlName;
+        }
+
+        return "{$prefix}_{$sqlName}";
+    }
+
+    /**
      * Nombres bajo los que puede aparecer la tabla del módulo en el SQL: con
      * prefijo (la convención de Suite) y sin él, en plural y en singular.
      *
@@ -209,8 +222,10 @@ class MakeModuleCommand extends Command
     private function askModuleShape(ModuleNaming $naming, GeneratorConfig $config, ?TableDefinition $table): ModuleContext
     {
         // Con SQL: code, campos y nombre de tabla se detectan. Sin SQL: se pregunta.
+        // El SQL del modelador solo aporta columnas; el nombre real de la tabla es
+        // el prefijo del comando + el nombre del SQL (ej. shd + test = shd_test).
         $fields = $table !== null ? FieldMapper::map($table) : [];
-        $tableName = $table?->name;
+        $tableName = $table !== null ? $this->prefixedTable($table->name, $naming->prefix) : null;
         $hasCode = $table !== null
             ? $table->hasColumn('code')
             : $this->confirm('¿El módulo lleva código (columna "code" con unicidad)?', true);
