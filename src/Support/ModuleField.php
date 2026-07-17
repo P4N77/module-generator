@@ -41,22 +41,27 @@ final class ModuleField
         return Str::headline($this->name);
     }
 
-    /** Tipo PHP para props/parámetros, con "?" cuando la columna admite null. */
+    /**
+     * Tipo PHP para props/parámetros, con "?" cuando la columna admite null.
+     * Todos los tipos se manejan como string en PHP: el cast decimal de Eloquent
+     * devuelve string y las fechas viajan como 'Y-m-d'. Así el valor cruza todas
+     * las capas sin conversiones frágiles.
+     */
     public function phpType(): string
     {
-        $base = $this->type === 'decimal' ? 'float' : 'string';
-
-        return $this->nullable ? "?{$base}" : $base;
+        return $this->nullable ? '?string' : 'string';
     }
 
-    /** Valor de $casts, o null si el tipo no necesita cast. */
+    /**
+     * Valor de $casts, o null si el tipo no necesita cast. Solo decimal lo lleva
+     * (normaliza la escala y sigue devolviendo string). Las fechas no se castean
+     * a Carbon a propósito, para que lleguen como string al dominio.
+     */
     public function cast(): ?string
     {
-        return match ($this->type) {
-            'date' => 'date',
-            'decimal' => 'decimal:'.($this->decimalScale ?? 2),
-            default => null,
-        };
+        return $this->type === 'decimal'
+            ? 'decimal:'.($this->decimalScale ?? 2)
+            : null;
     }
 
     /** Línea de columna para la migración (sin indentación ni salto). */

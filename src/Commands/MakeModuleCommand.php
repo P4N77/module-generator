@@ -123,9 +123,10 @@ class MakeModuleCommand extends Command
     }
 
     /**
-     * Localiza en el SQL la tabla del módulo. Si el nombre no coincide con la
-     * convención (pluralización + snake_case + prefijo), lista las tablas
-     * detectadas y deja elegir, en vez de fallar.
+     * Localiza en el SQL la tabla del módulo. El SQL del modelador suele venir
+     * sin el prefijo de Suite (p. ej. "test" en vez de "shd_tests"), así que se
+     * prueban varios nombres candidatos y, si solo hay una tabla, se usa esa. El
+     * prefijo es cosa de la carpeta de la migración, no del nombre de la tabla.
      */
     private function resolveTable(string $sql, ModuleNaming $naming, ModuleConsole $console): ?TableDefinition
     {
@@ -137,9 +138,16 @@ class MakeModuleCommand extends Command
             return null;
         }
 
-        $match = SqlTableParser::find($tables, $naming->table);
-        if ($match !== null) {
-            return $match;
+        foreach ($this->tableCandidates($naming) as $candidate) {
+            $match = SqlTableParser::find($tables, $candidate);
+            if ($match !== null) {
+                return $match;
+            }
+        }
+
+        // Caso común del modelador: un único CREATE TABLE. Es la tabla del módulo.
+        if (count($tables) === 1) {
+            return $tables[0];
         }
 
         $console->tableNotFound($naming->table, $tables);
@@ -157,6 +165,25 @@ class MakeModuleCommand extends Command
         }
 
         return SqlTableParser::find($tables, (string) $choice);
+    }
+
+    /**
+     * Nombres bajo los que puede aparecer la tabla del módulo en el SQL: con
+     * prefijo (la convención de Suite) y sin él, en plural y en singular.
+     *
+     * @return list<string>
+     */
+    private function tableCandidates(ModuleNaming $naming): array
+    {
+        $pluralSnake = Str::snake($naming->plural);
+        $singularSnake = Str::snake($naming->singular);
+
+        return array_values(array_unique([
+            $naming->table,                                                   // shd_tests
+            str_replace($pluralSnake, $singularSnake, $naming->table),        // shd_test
+            $pluralSnake,                                                     // tests
+            $singularSnake,                                                   // test
+        ]));
     }
 
     /**
