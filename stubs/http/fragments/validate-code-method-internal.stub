@@ -1,0 +1,28 @@
+
+    public function validateCode()
+    {
+        if (! $this->userCanManage()) {
+            return response()->json(['message' => 'No tienes permisos para validar códigos de %%visibleLower%%.'], 403);
+        }
+
+        $rawCode = (string) request()->input('code', '');
+        $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $rawCode));
+
+        $validated = validator(
+            ['uuid' => request()->input('uuid'), 'code' => $code],
+            [
+                'uuid' => ['nullable', 'string'],
+                'code' => ['required', 'string', 'max:10', 'regex:/^[A-Z0-9]+$/'],
+            ],
+            [
+                'code.regex' => 'El código solo puede contener letras y números, sin espacios ni símbolos.',
+            ]
+        )->validate();
+
+        $exists = $this->validate%%singular%%CodeHandler->handle(
+            $validated['code'],
+            $validated['uuid'] ?? null
+        );
+
+        return response()->json(['exists' => $exists]);
+    }

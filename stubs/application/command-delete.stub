@@ -1,0 +1,12 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Commands;
+
+final class Delete%%singular%%Command
+{
+    public function __construct(
+        public string $uuid,
+    ) {}
+}

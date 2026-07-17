@@ -1,0 +1,21 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Support\Facades\Route;
+use %%ns%%\%%plural%%\Infrastructure\Http\Controllers\%%controller%%;
+
+// Módulo interno (sin menú ni permisos Casbin): el acceso se restringe en el
+// controller a la cuenta Sodeker con rol Developer, igual que Authentications.
+Route::middleware(['web', 'auth:sanctum', config('jetstream.auth_session'), 'verified', 'tenant.selected', 'tenant'])->group(function () {
+    Route::get('%%indexUrl%%', [%%controller%%::class, 'index'])->name('%%moduleCode%%.index');
+    Route::get('/%%kebab%%/{uuid}/show', [%%controller%%::class, 'viewShow'])->name('%%moduleCode%%.show');
+
+    Route::get('/%%kebab%%/create', [%%controller%%::class, 'viewCreate'])->name('%%moduleCode%%.create');
+    Route::post('/%%kebab%%-create', [%%controller%%::class, 'store'])->name('%%moduleCode%%.store');
+
+    Route::get('/%%kebab%%/{uuid}/edit', [%%controller%%::class, 'viewEdit'])->name('%%moduleCode%%.edit');
+    Route::put('/%%kebab%%/{uuid}', [%%controller%%::class, 'update'])->name('%%moduleCode%%.update');
+
+    Route::delete('/%%kebab%%/{uuid}', [%%controller%%::class, 'destroy'])->name('%%moduleCode%%.destroy');
+%%validateRoute%%});

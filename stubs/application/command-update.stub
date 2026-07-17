@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Commands;
+
+final class Update%%singular%%Command
+{
+    public function __construct(
+        public string $uuid,
+%%codeUpdate%%        public ?string $description,
+%%extraUpdate%%        public ?string $status,
+        public ?string $actorId,
+    ) {}
+}

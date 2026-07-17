@@ -1,0 +1,39 @@
+<?php
+
+namespace %%namespace%%;
+
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+
+class %%seederClass%% extends Seeder
+{
+    public function run(): void
+    {
+        $now = now();
+        $systemUser = '1';
+
+        $rows = [
+%%sampleRow%%
+        ];
+
+        foreach ($rows as $row) {
+            $existing = DB::table('%%tableName%%')
+                ->where('%%matchKey%%', $row['%%matchKey%%'])
+                ->first();
+
+            DB::table('%%tableName%%')->updateOrInsert(
+                ['%%matchKey%%' => $row['%%matchKey%%']],
+                [
+                    'uuid' => $existing->uuid ?? (string) Str::ulid(),
+%%codeInsert%%                    'description' => $row['description'] ?? null,
+                    'status' => '1',
+                    'created_by' => $systemUser,
+                    'updated_by' => $systemUser,
+                    'created_at' => $existing->created_at ?? $now,
+                    'updated_at' => $now,
+                ]
+            );
+        }
+    }
+}

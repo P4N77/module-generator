@@ -1,0 +1,28 @@
+# Contrato %%plural%% (`%%sharedNs%%\%%plural%%`)
+
+Lectura de `%%table%%` para otros módulos, sin acoplarse al repositorio del
+módulo dueño. Inspirado en el contrato de DataBridge, pero **sin `listing`** (el
+módulo ES el listado) y resolviendo contra el Eloquent propio.
+
+Implementación: `%%moduleNs%%\%%plural%%\Application\Services\%%listService%%`.
+
+## Firma
+
+```php
+public function execute(?array $filters = null, bool $matchAny = false): %%listDto%%;
+```
+
+## Filtros
+
+| Clave | Efecto |
+|-------|--------|
+| `['columna' => 'valor']` | Filtra por columna (texto = ILIKE; id/uuid/status = exacto) |
+| `['columna' => [v1, v2]]` | WHERE IN |
+| `search` | Búsqueda global en columnas no exactas |
+| `page` + `per_page` | Paginan. **Si faltan, devuelve TODOS sin límite** |
+
+## Post-filtro (`%%matchContract%%`)
+
+```php
+matchByField(array $rows, string $field, mixed $expectedValue): ?array;
+```

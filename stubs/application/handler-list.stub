@@ -1,0 +1,25 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Handlers;
+
+use %%ns%%\%%plural%%\Application\DTOs\%%singular%%CollectionDTO;
+use %%ns%%\%%plural%%\Domain\Repositories\%%repoInterface%%;
+
+final class List%%plural%%Handler
+{
+    public function __construct(private %%repoInterface%% $repo) {}
+
+    public function handle(array $filters, int $page, int $perPage): %%singular%%CollectionDTO
+    {
+        $result = $this->repo->list();
+
+        return %%singular%%CollectionDTO::fromDomain(
+            entities: $result['data'],
+            total: $result['total'],
+            page: $page,
+            perPage: $perPage,
+        );
+    }
+}

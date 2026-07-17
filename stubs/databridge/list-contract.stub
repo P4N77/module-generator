@@ -1,0 +1,22 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%shared%%\%%plural%%;
+
+use %%ns%%\%%plural%%\Application\DTOs\%%listDto%%;
+
+/**
+ * Caso de uso: listar %%table%% del tenant, filtrable y con paginación
+ * OPCIONAL. Sin paginar -> se devuelven todos.
+ *
+ * @see README.md en este directorio
+ */
+interface %%listContract%%
+{
+    /**
+     * @param  array<string, mixed>|null  $filters  Columnas, 'search' y opcionalmente page/per_page
+     * @param  bool  $matchAny  false (AND, por defecto) exige todas las columnas; true (OR) basta con una
+     */
+    public function execute(?array $filters = null, bool $matchAny = false): %%listDto%%;
+}

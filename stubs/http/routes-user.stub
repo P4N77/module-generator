@@ -1,0 +1,36 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Support\Facades\Route;
+use %%ns%%\%%plural%%\Infrastructure\Http\Controllers\%%controller%%;
+
+Route::middleware(['web', 'tenant.selected', 'tenant'])->group(function () {
+    $sanctumVerified = ['auth:sanctum', config('jetstream.auth_session'), 'verified'];
+
+    Route::middleware(array_merge($sanctumVerified, ['casbin:%%moduleCode%%,view']))->group(function () {
+        Route::get('%%indexUrl%%', [%%controller%%::class, 'index'])
+            ->name('%%moduleCode%%.index');
+        Route::get('/%%kebab%%/{uuid}/show', [%%controller%%::class, 'viewShow'])
+            ->name('%%moduleCode%%.show');
+    });
+
+    Route::middleware(['auth', 'casbin:%%moduleCode%%,create'])->group(function () {
+        Route::get('/%%kebab%%/create', [%%controller%%::class, 'viewCreate'])
+            ->name('%%moduleCode%%.create');
+        Route::post('/%%kebab%%-create', [%%controller%%::class, 'store'])
+            ->name('%%moduleCode%%.store');
+    });
+
+    Route::middleware(['auth', 'casbin:%%moduleCode%%,edit'])->group(function () {
+        Route::get('/%%kebab%%/{uuid}/edit', [%%controller%%::class, 'viewEdit'])
+            ->name('%%moduleCode%%.edit');
+        Route::put('/%%kebab%%/{uuid}', [%%controller%%::class, 'update'])
+            ->name('%%moduleCode%%.update');
+    });
+
+    Route::middleware(['auth', 'casbin:%%moduleCode%%,delete'])->group(function () {
+        Route::delete('/%%kebab%%/{uuid}', [%%controller%%::class, 'destroy'])
+            ->name('%%moduleCode%%.destroy');
+    });
+%%validateRoute%%});

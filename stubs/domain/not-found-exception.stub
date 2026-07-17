@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Domain\Exceptions;
+
+use App\Shared\Domain\Exceptions\ResourceNotFoundException;
+
+final class %%exceptionName%% extends ResourceNotFoundException
+{
+    public static function withUuid(string $uuid): self
+    {
+        return new self("%%singular%% con UUID {$uuid} no encontrado");
+    }
+}

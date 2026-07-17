@@ -1,0 +1,29 @@
+                                <div class="col-4">
+                                    <label for="code" class="form-label">Código<span class="text-danger ms-1">*</span></label>
+                                    <input
+                                        v-model="%%formVar%%.code"
+                                        type="text"
+                                        class="form-control"
+                                        id="code"
+                                        maxlength="10"
+                                        placeholder="Ej: COD001"
+                                        :class="{ 'field-error': formErrors.code || codeExistsError }"
+                                        @input="onCodeInput(); clearFormError('code'); codeExistsError = '';"
+                                    >
+                                    <div v-if="codeExistsError" class="invalid-feedback d-block">
+                                        {{ codeExistsError }}
+                                    </div>
+                                </div>
+                                <div class="col-8">
+                                    <label for="description" class="form-label">Descripción<span class="text-danger ms-1">*</span></label>
+                                    <input
+                                        v-model="%%formVar%%.description"
+                                        type="text"
+                                        class="form-control"
+                                        id="description"
+                                        maxlength="191"
+                                        placeholder="Ingrese descripción"
+                                        :class="{ 'field-error': formErrors.description }"
+                                        @input="clearFormError('description');"
+                                    >
+                                </div>

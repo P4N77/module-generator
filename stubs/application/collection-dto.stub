@@ -1,0 +1,53 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\DTOs;
+
+use %%ns%%\%%plural%%\Domain\Entities\%%singular%%;
+
+final class %%singular%%CollectionDTO
+{
+    public function __construct(
+        public array $items,
+        public int $total,
+        public int $page,
+        public int $perPage,
+    ) {}
+
+    public static function fromDomain(array $entities, int $total, int $page = 1, int $perPage = 15): self
+    {
+        $items = array_map(
+            fn (%%singular%% $%%singularCamel%%) => %%singular%%DTO::fromDomain($%%singularCamel%%),
+            $entities
+        );
+
+        return new self(
+            items: $items,
+            total: $total,
+            page: $page,
+            perPage: $perPage,
+        );
+    }
+
+    public function toArray(): array
+    {
+        return [
+            'data' => array_map(
+                fn (%%singular%%DTO $dto) => [
+                    'id' => $dto->id,
+                    'uuid' => $dto->uuid,
+%%codeCollArray%%                    'description' => $dto->description,
+%%extraCollArray%%                    'status' => $dto->status->value,
+                ],
+                $this->items
+            ),
+            'meta' => [
+                'total' => $this->total,
+                'page' => $this->page,
+                'per_page' => $this->perPage,
+                'last_page' => (int) ceil($this->total / max(1, $this->perPage)),
+            ],
+        ];
+    }
+}

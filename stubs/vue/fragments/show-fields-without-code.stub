@@ -1,0 +1,6 @@
+                            <div class="col-md-12 mb-1">
+                                <label class="form-label">Descripción</label>
+                                <p class="text-muted">
+                                    {{ %%singularCamel%%.description || 'Sin descripción' }}
+                                </p>
+                            </div>

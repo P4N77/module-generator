@@ -1,0 +1,22 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Domain\Repositories;
+
+use %%ns%%\%%plural%%\Domain\Entities\%%singular%% as %%entityAlias%%;
+
+interface %%interfaceName%%
+{
+    public function findByUuid(string $uuid): ?%%entityAlias%%;
+
+    public function findAll(): array;
+
+    public function list(): array;
+
+    public function save(%%entityAlias%% $%%singularCamel%%): %%entityAlias%%;
+%%codeExists%%
+    public function update(%%entityAlias%% $%%singularCamel%%): void;
+
+    public function delete(string $uuid): void;
+}

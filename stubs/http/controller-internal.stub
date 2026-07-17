@@ -1,0 +1,169 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Infrastructure\Http\Controllers;
+
+use App\Http\Controllers\Controller;
+use App\Modules\Tenants\Domain\DevelopTenantMembershipRule;
+use Inertia\Inertia;
+use Illuminate\Support\Facades\Auth;
+
+use %%ns%%\%%plural%%\Infrastructure\Http\Requests\{
+    Create%%singular%%Request,
+    Update%%singular%%Request,
+    Filter%%plural%%Request,
+};
+
+use %%ns%%\%%plural%%\Application\Handlers\{
+    List%%plural%%Handler,
+    Get%%singular%%ByUuidHandler,
+    Create%%singular%%Handler,%%validateHandlerUse%%
+    Update%%singular%%Handler,
+    Delete%%singular%%Handler,
+};
+
+use %%ns%%\%%plural%%\Application\Commands\{
+    Update%%singular%%Command,
+    Create%%singular%%Command,
+    Delete%%singular%%Command,
+};
+
+class %%singular%%Controller extends Controller
+{
+    public function __construct(
+        private Get%%singular%%ByUuidHandler $get%%singular%%ByUuidHandler,
+        private Create%%singular%%Handler $create%%singular%%Handler,
+%%validateHandlerCtor%%        private Update%%singular%%Handler $update%%singular%%Handler,
+        private Delete%%singular%%Handler $delete%%singular%%Handler,
+    ) {}
+
+    /**
+     * Módulo interno sin menú: solo la cuenta sembrada Sodeker con rol
+     * Developer puede administrar este recurso (mismo guard que Authentications).
+     */
+    private function userCanManage(): bool
+    {
+        $user = Auth::user();
+        if ($user === null) {
+            return false;
+        }
+
+        $email = (string) ($user->email ?? '');
+        $roleCode = (string) ($user->role?->code ?? '');
+
+        return strcasecmp($email, DevelopTenantMembershipRule::ALLOWED_EMAIL) === 0
+            && strcasecmp($roleCode, DevelopTenantMembershipRule::ALLOWED_ROLE_CODE) === 0;
+    }
+
+    public function index(Filter%%plural%%Request $r, List%%plural%%Handler $handler)
+    {
+        if (! $this->userCanManage()) {
+            return Inertia::render('%%plural%%/Index', [
+                'canViewModule' => false,
+                'message' => 'Esta sección está disponible únicamente para la cuenta Sodeker con rol Developer.',
+                'permissions' => ['view' => false, 'create' => false, 'edit' => false, 'delete' => false],
+                '%%moduleCode%%' => ['data' => [], 'meta' => ['total' => 0]],
+                'title' => '%%visibleName%%',
+            ]);
+        }
+
+        $filters = $r->validated();
+        $page = (int) ($filters['page'] ?? 1);
+        $perPage = (int) ($filters['per_page'] ?? 15);
+
+        $collectionDTO = $handler->handle($filters, $page, $perPage);
+
+        return Inertia::render('%%plural%%/Index', [
+            'canViewModule' => true,
+            'permissions' => ['view' => true, 'create' => true, 'edit' => true, 'delete' => true],
+            '%%moduleCode%%' => $collectionDTO->toArray(),
+            'title' => '%%visibleName%%',
+        ]);
+    }
+
+    public function viewCreate()
+    {
+        if (! $this->userCanManage()) {
+            return redirect()->route('%%moduleCode%%.index');
+        }
+
+        return Inertia::render('%%plural%%/Create', []);
+    }
+
+    public function viewEdit(string $uuid)
+    {
+        if (! $this->userCanManage()) {
+            return redirect()->route('%%moduleCode%%.index');
+        }
+
+        $dto = $this->get%%singular%%ByUuidHandler->handle($uuid);
+
+        return Inertia::render('%%plural%%/Edit', [
+            'uuid' => $uuid,
+            '%%singularCamel%%' => $dto->toArray(),
+        ]);
+    }
+
+    public function viewShow(string $uuid)
+    {
+        if (! $this->userCanManage()) {
+            return redirect()->route('%%moduleCode%%.index');
+        }
+
+        $dto = $this->get%%singular%%ByUuidHandler->handle($uuid);
+
+        return Inertia::render('%%plural%%/Show', [
+            'uuid' => $uuid,
+            '%%singularCamel%%' => $dto->toArray(),
+        ]);
+    }
+
+    public function store(Create%%singular%%Request $r)
+    {
+        if (! $this->userCanManage()) {
+            return response()->json(['message' => 'No tienes permisos para crear %%visibleLower%%.'], 403);
+        }
+
+        $userId = (string) (Auth::id() ?? 1);
+        $cmd = new Create%%singular%%Command(
+%%codeStore%%            description: $r->input('description'),
+%%extraStore%%            status: $r->input('status'),
+            createdBy: $userId,
+            updatedBy: $userId,
+        );
+        $dto = $this->create%%singular%%Handler->handle($cmd);
+
+        return response()->json(['data' => $dto->toArray()]);
+    }
+%%validateMethod%%
+    public function update(string $uuid, Update%%singular%%Request $r)
+    {
+        if (! $this->userCanManage()) {
+            return response()->json(['message' => 'No tienes permisos para editar %%visibleLower%%.'], 403);
+        }
+
+        $userId = (string) (Auth::id() ?? 1);
+        $command = new Update%%singular%%Command(
+            uuid: $uuid,
+%%codeUpdate%%            description: $r->input('description'),
+%%extraUpdate%%            status: $r->input('status'),
+            actorId: $userId,
+        );
+
+        $dto = $this->update%%singular%%Handler->handle($command);
+
+        return response()->json(['data' => $dto->toArray()]);
+    }
+
+    public function destroy(string $uuid)
+    {
+        if (! $this->userCanManage()) {
+            return response()->json(['message' => 'No tienes permisos para eliminar %%visibleLower%%.'], 403);
+        }
+
+        $this->delete%%singular%%Handler->handle(new Delete%%singular%%Command($uuid));
+
+        return response()->noContent();
+    }
+}

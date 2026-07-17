@@ -1,0 +1,27 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Handlers;
+
+use %%ns%%\%%plural%%\Application\DTOs\%%singular%%DTO;
+use %%ns%%\%%plural%%\Domain\Repositories\%%repoInterface%%;
+use %%ns%%\%%plural%%\Domain\Exceptions\%%singular%%NotFoundException;
+
+final class Get%%singular%%ByUuidHandler
+{
+    public function __construct(
+        private %%repoInterface%% $repo,
+    ) {}
+
+    public function handle(string $uuid): %%singular%%DTO
+    {
+        $entity = $this->repo->findByUuid($uuid);
+
+        if ($entity === null) {
+            throw %%singular%%NotFoundException::withUuid($uuid);
+        }
+
+        return %%singular%%DTO::fromDomain($entity);
+    }
+}

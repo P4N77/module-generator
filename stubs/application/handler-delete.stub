@@ -1,0 +1,18 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Handlers;
+
+use %%ns%%\%%plural%%\Application\Commands\Delete%%singular%%Command;
+use %%ns%%\%%plural%%\Domain\Repositories\%%repoInterface%%;
+
+final class Delete%%singular%%Handler
+{
+    public function __construct(private %%repoInterface%% $repo) {}
+
+    public function handle(Delete%%singular%%Command $c): void
+    {
+        $this->repo->delete($c->uuid);
+    }
+}

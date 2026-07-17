@@ -1,0 +1,32 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Handlers;
+
+use %%ns%%\%%plural%%\Application\Commands\Create%%singular%%Command;
+use %%ns%%\%%plural%%\Application\DTOs\Save%%singular%%DTO;
+use %%ns%%\%%plural%%\Domain\Repositories\%%repoInterface%%;
+use %%ns%%\%%plural%%\Domain\ValueObjects\%%statusVo%%;
+use %%ns%%\%%plural%%\Domain\Entities\%%singular%%;
+
+final class Create%%singular%%Handler
+{
+    public function __construct(
+        private %%repoInterface%% $repo,
+    ) {}
+
+    public function handle(Create%%singular%%Command $c): Save%%singular%%DTO
+    {
+        $%%singularCamel%% = %%singular%%::create(
+            id: null,
+%%codeCreateAssign%%            description: $c->description,
+%%extraCreateAssign%%            status: %%statusVo%%::fromMixed($c->status),
+            createdBy: $c->createdBy,
+            updatedBy: $c->updatedBy,
+        );
+        $saved = $this->repo->save($%%singularCamel%%);
+
+        return Save%%singular%%DTO::fromDomain($saved);
+    }
+}

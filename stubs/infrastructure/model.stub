@@ -1,0 +1,26 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Infrastructure\Database\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class %%singular%% extends Model
+{
+    use SoftDeletes;
+
+    protected $table = '%%table%%';%%connectionLine%%
+    public $incrementing = true;
+    protected $keyType = 'int';
+
+    protected $fillable = [
+        'id',
+        'uuid',
+%%codeFillable%%        'description',
+%%extraFillable%%        'status',
+        'created_by',
+        'updated_by',
+    ];
+%%castsBlock%%}

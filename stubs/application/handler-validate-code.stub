@@ -1,0 +1,17 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Handlers;
+
+use %%ns%%\%%plural%%\Domain\Repositories\%%repoInterface%%;
+
+final class Validate%%singular%%CodeHandler
+{
+    public function __construct(private %%repoInterface%% $repo) {}
+
+    public function handle(string $code, ?string $excludeUuid = null): bool
+    {
+        return $this->repo->codeExists($code, $excludeUuid);
+    }
+}

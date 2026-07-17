@@ -1,0 +1,13 @@
+
+    public function codeExists(string $code, ?string $excludeUuid = null): bool
+    {
+        $normalized = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', trim($code)));
+        $query = %%singular%%::query()
+            ->whereRaw('TRIM(code) = ?', [$normalized])
+            ->whereNull('deleted_at');
+        if (! empty($excludeUuid)) {
+            $query->where('uuid', '!=', $excludeUuid);
+        }
+
+        return $query->exists();
+    }

@@ -1,0 +1,12 @@
+                            <div class="col-md-4 mb-1">
+                                <label class="form-label">Código</label>
+                                <p class="text-muted">
+                                    {{ %%singularCamel%%.code || '' }}
+                                </p>
+                            </div>
+                            <div class="col-md-8 mb-1">
+                                <label class="form-label">Descripción</label>
+                                <p class="text-muted">
+                                    {{ %%singularCamel%%.description || 'Sin descripción' }}
+                                </p>
+                            </div>

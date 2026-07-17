@@ -1,0 +1,13 @@
+                                <div class="col-12">
+                                    <label for="description" class="form-label">Descripción<span class="text-danger ms-1">*</span></label>
+                                    <input
+                                        v-model="%%formVar%%.description"
+                                        type="text"
+                                        class="form-control"
+                                        id="description"
+                                        maxlength="191"
+                                        placeholder="Ingrese descripción"
+                                        :class="{ 'field-error': formErrors.description }"
+                                        @input="clearFormError('description');"
+                                    >
+                                </div>

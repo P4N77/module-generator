@@ -1,0 +1,50 @@
+<?php
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%;
+
+use Illuminate\Support\ServiceProvider;
+use %%ns%%\%%plural%%\Domain\Repositories\{
+    %%repositoryInterface%%,
+    %%listRepositoryInterface%%,
+};
+use %%ns%%\%%plural%%\Infrastructure\Database\Repositories\{
+    %%repositoryImplementation%%,
+    %%listRepositoryImplementation%%,
+};
+use %%ns%%\%%plural%%\Application\Services\{
+    %%listService%%,
+    %%matchService%%,
+};
+
+use %%shared%%\%%plural%%\{
+    %%listContract%%,
+    %%matchContract%%,
+};
+
+final class %%serviceProviderName%% extends ServiceProvider
+{
+    public function register(): void
+    {
+        $this->app->bind(%%repositoryInterface%%::class, %%repositoryImplementation%%::class);
+
+        $this->app->singleton(
+            %%listRepositoryInterface%%::class,
+            %%listRepositoryImplementation%%::class,
+        );
+        $this->app->singleton(
+            %%listContract%%::class,
+            %%listService%%::class,
+        );
+        $this->app->singleton(
+            %%matchContract%%::class,
+            %%matchService%%::class,
+        );
+    }
+
+    public function boot(): void
+    {
+        $this->loadRoutesFrom(__DIR__.'/Infrastructure/Http/Routes/web.php');
+        $this->loadMigrationsFrom(__DIR__.'/Infrastructure/Database/Migrations');
+    }
+}

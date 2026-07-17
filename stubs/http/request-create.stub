@@ -1,0 +1,38 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Infrastructure\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+%%useRule%%
+class Create%%singular%%Request extends FormRequest
+{
+    public function authorize(): bool { return true; }
+
+    protected function prepareForValidation(): void
+    {
+        $description = trim((string) $this->input('description', ''));
+%%prepareCode%%
+    }
+
+    public function rules(): array
+    {
+        return [
+%%createCodeRule%%%%createDescRule%%
+%%extraCreateRules%%            'status' => 'required|boolean',
+        ];
+    }
+
+    public function messages(): array
+    {
+        return [
+%%codeMessages%%            'description.required' => 'El campo descripción es requerido',
+            'description.string' => 'El campo descripción debe ser un texto',
+            'description.max' => 'El campo descripción debe tener máximo 191 caracteres',
+            'description.unique' => 'Ya existe un registro con esta descripción',
+            'status.required' => 'El campo estado es requerido',
+            'status.boolean' => 'El campo estado no tiene un valor válido',
+        ];
+    }
+}

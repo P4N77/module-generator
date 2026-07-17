@@ -1,0 +1,18 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%shared%%\%%plural%%;
+
+/**
+ * Post-filtra las filas devueltas por %%listContract%%::execute()->getData()
+ * localizando la primera cuyo campo coincide EXACTAMENTE con el valor esperado.
+ */
+interface %%matchContract%%
+{
+    /**
+     * @param  list<array<string, mixed>>  $rows
+     * @return array<string, mixed>|null
+     */
+    public function matchByField(array $rows, string $field, mixed $expectedValue): ?array;
+}

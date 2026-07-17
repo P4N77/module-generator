@@ -1,0 +1,94 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Infrastructure\Database\Repositories;
+
+use Illuminate\Support\Facades\DB;
+
+use %%ns%%\%%plural%%\Domain\Repositories\%%interfaceName%%;
+use %%ns%%\%%plural%%\Domain\Entities\%%singular%% as %%entityAlias%%;
+use %%ns%%\%%plural%%\Domain\ValueObjects\%%statusVo%%;
+use %%ns%%\%%plural%%\Infrastructure\Database\Models\%%singular%%;
+
+class %%repositoryName%% implements %%interfaceName%%
+{
+    public function findByUuid(string $uuid): ?%%entityAlias%%
+    {
+        $model = %%singular%%::where('uuid', $uuid)->first();
+
+        if (! $model) {
+            return null;
+        }
+
+        return $this->toDomain($model);
+    }
+
+    public function findAll(): array
+    {
+        return %%singular%%::all()
+            ->map(fn ($model) => $this->toDomain($model))
+            ->toArray();
+    }
+
+    public function list(): array
+    {
+        $items = %%singular%%::all()->map(fn ($m) => $this->toDomain($m))->all();
+        $total = %%singular%%::count();
+
+        return [
+            'data' => $items,
+            'total' => $total,
+        ];
+    }
+
+    public function save(%%entityAlias%% $%%singularCamel%%): %%entityAlias%%
+    {
+        return DB::transaction(function () use ($%%singularCamel%%) {
+            $model = new %%singular%%();
+            $model->uuid = $%%singularCamel%%->uuid();
+%%codeSave%%            $model->description = $%%singularCamel%%->description();
+%%extraSave%%            $model->status = $%%singularCamel%%->status()->value;
+            $model->created_by = $%%singularCamel%%->createdBy();
+            $model->updated_by = $%%singularCamel%%->updatedBy();
+            $model->created_at = now();
+            $model->updated_at = now();
+            $model->save();
+            $model->refresh();
+
+            return $this->toDomain($model);
+        });
+    }
+%%codeExistsMethod%%
+    public function update(%%entityAlias%% $%%singularCamel%%): void
+    {
+        $m = %%singular%%::where('uuid', $%%singularCamel%%->uuid())->first();
+        if ($m) {
+%%codeUpdate%%            $m->description = $%%singularCamel%%->description();
+%%extraUpdate%%            $m->status = $%%singularCamel%%->status()->value;
+            $m->updated_by = $%%singularCamel%%->updatedBy();
+            $m->updated_at = now();
+            $m->save();
+        }
+    }
+
+    public function delete(string $uuid): void
+    {
+        %%singular%%::where('uuid', $uuid)->delete();
+    }
+
+    private function toDomain(%%singular%% $m): %%entityAlias%%
+    {
+        return new %%entityAlias%%(
+            id: (int) $m->id,
+            uuid: $m->uuid,
+%%codeToDomain%%            description: $m->description,
+%%extraToDomain%%            status: %%statusVo%%::fromMixed($m->status),
+            createdBy: (string) ($m->created_by ?? ''),
+            updatedBy: (string) ($m->updated_by ?? ''),
+            createdAt: new \DateTimeImmutable($m->created_at?->toAtomString() ?? 'now'),
+            updatedAt: new \DateTimeImmutable($m->updated_at?->toAtomString() ?? 'now'),
+            deletedAt: $m->deleted_at ? new \DateTimeImmutable($m->deleted_at->toAtomString()) : null,
+        );
+    }
+}

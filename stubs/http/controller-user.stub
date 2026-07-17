@@ -1,0 +1,138 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Infrastructure\Http\Controllers;
+
+use App\Http\Controllers\Controller;
+use Inertia\Inertia;
+use Illuminate\Support\Facades\Auth;
+use Sodeker\LaravelCasbin\Domain\Contracts\PermissionServiceInterface;
+
+use %%ns%%\%%plural%%\Infrastructure\Http\Requests\{
+    Create%%singular%%Request,
+    Update%%singular%%Request,
+    Filter%%plural%%Request,
+};
+
+use %%ns%%\%%plural%%\Application\Handlers\{
+    List%%plural%%Handler,
+    Get%%singular%%ByUuidHandler,
+    Create%%singular%%Handler,%%validateHandlerUse%%
+    Update%%singular%%Handler,
+    Delete%%singular%%Handler,
+};
+
+use %%ns%%\%%plural%%\Application\Commands\{
+    Update%%singular%%Command,
+    Create%%singular%%Command,
+    Delete%%singular%%Command,
+};
+
+class %%singular%%Controller extends Controller
+{
+    public function __construct(
+        private PermissionServiceInterface $permissionService,
+        private Get%%singular%%ByUuidHandler $get%%singular%%ByUuidHandler,
+        private Create%%singular%%Handler $create%%singular%%Handler,
+%%validateHandlerCtor%%        private Update%%singular%%Handler $update%%singular%%Handler,
+        private Delete%%singular%%Handler $delete%%singular%%Handler,
+    ) {}
+
+    public function index(Filter%%plural%%Request $r, List%%plural%%Handler $handler)
+    {
+        $userId = (int) Auth::id();
+        $tenantId = (int) session('tenant_id');
+        $module = '%%moduleCode%%';
+        $permissions = [
+            'view' => $this->permissionService->can($userId, $tenantId, $module, 'view'),
+            'create' => $this->permissionService->can($userId, $tenantId, $module, 'create'),
+            'edit' => $this->permissionService->can($userId, $tenantId, $module, 'edit'),
+            'delete' => $this->permissionService->can($userId, $tenantId, $module, 'delete'),
+        ];
+
+        if (! $permissions['view']) {
+            return Inertia::render('%%plural%%/Index', [
+                'canViewModule' => false,
+                'message' => 'No tienes permisos para acceder al módulo de %%visibleLower%%.',
+                'permissions' => $permissions,
+                '%%moduleCode%%' => ['data' => [], 'meta' => ['total' => 0]],
+                'title' => '%%visibleName%%',
+            ]);
+        }
+
+        $filters = $r->validated();
+        $page = (int) ($filters['page'] ?? 1);
+        $perPage = (int) ($filters['per_page'] ?? 15);
+
+        $collectionDTO = $handler->handle($filters, $page, $perPage);
+
+        return Inertia::render('%%plural%%/Index', [
+            'canViewModule' => true,
+            'permissions' => $permissions,
+            '%%moduleCode%%' => $collectionDTO->toArray(),
+            'title' => '%%visibleName%%',
+        ]);
+    }
+
+    public function viewCreate()
+    {
+        return Inertia::render('%%plural%%/Create', []);
+    }
+
+    public function viewEdit(string $uuid)
+    {
+        $dto = $this->get%%singular%%ByUuidHandler->handle($uuid);
+
+        return Inertia::render('%%plural%%/Edit', [
+            'uuid' => $uuid,
+            '%%singularCamel%%' => $dto->toArray(),
+        ]);
+    }
+
+    public function viewShow(string $uuid)
+    {
+        $dto = $this->get%%singular%%ByUuidHandler->handle($uuid);
+
+        return Inertia::render('%%plural%%/Show', [
+            'uuid' => $uuid,
+            '%%singularCamel%%' => $dto->toArray(),
+        ]);
+    }
+
+    public function store(Create%%singular%%Request $r)
+    {
+        $userId = (string) (Auth::id() ?? 1);
+        $cmd = new Create%%singular%%Command(
+%%codeStore%%            description: $r->input('description'),
+%%extraStore%%            status: $r->input('status'),
+            createdBy: $userId,
+            updatedBy: $userId,
+        );
+        $dto = $this->create%%singular%%Handler->handle($cmd);
+
+        return response()->json(['data' => $dto->toArray()]);
+    }
+%%validateMethod%%
+    public function update(string $uuid, Update%%singular%%Request $r)
+    {
+        $userId = (string) (Auth::id() ?? 1);
+        $command = new Update%%singular%%Command(
+            uuid: $uuid,
+%%codeUpdate%%            description: $r->input('description'),
+%%extraUpdate%%            status: $r->input('status'),
+            actorId: $userId,
+        );
+
+        $dto = $this->update%%singular%%Handler->handle($command);
+
+        return response()->json(['data' => $dto->toArray()]);
+    }
+
+    public function destroy(string $uuid)
+    {
+        $this->delete%%singular%%Handler->handle(new Delete%%singular%%Command($uuid));
+
+        return response()->noContent();
+    }
+}

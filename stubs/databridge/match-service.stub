@@ -1,0 +1,36 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Services;
+
+use %%shared%%\%%plural%%\%%matchContract%%;
+
+final class %%matchService%% implements %%matchContract%%
+{
+    public function matchByField(array $rows, string $field, mixed $expectedValue): ?array
+    {
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+
+            $actual = $row[$field] ?? null;
+            if ($this->valuesMatch($actual, $expectedValue)) {
+                return $row;
+            }
+        }
+
+        return null;
+    }
+
+    private function valuesMatch(mixed $actual, mixed $expected): bool
+    {
+        if (is_string($actual) && is_string($expected)) {
+            // char(N) en PostgreSQL rellena con espacios; comparar el valor de negocio.
+            return rtrim($actual) === rtrim($expected);
+        }
+
+        return $actual === $expected;
+    }
+}

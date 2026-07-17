@@ -1,0 +1,71 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\DTOs;
+
+use JsonSerializable;
+
+/**
+ * Misma forma que DataBridge: success, data, meta.
+ */
+final class %%listDto%% implements JsonSerializable
+{
+    /**
+     * @param  list<array<string, mixed>>  $data
+     * @param  array<string, mixed>  $meta
+     */
+    public function __construct(
+        private readonly bool $success,
+        private readonly array $data,
+        private readonly array $meta,
+    ) {}
+
+    /**
+     * @param  array{success?: mixed, data?: mixed, meta?: mixed}  $result
+     */
+    public static function fromRepositoryResult(array $result): self
+    {
+        $data = is_array($result['data'] ?? null) ? $result['data'] : [];
+        $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
+
+        return new self((bool) ($result['success'] ?? true), $data, $meta);
+    }
+
+    public function isSuccess(): bool
+    {
+        return $this->success;
+    }
+
+    public function isEmpty(): bool
+    {
+        return $this->data === [];
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function getData(): array
+    {
+        return $this->data;
+    }
+
+    /** @return array<string, mixed> */
+    public function getMeta(): array
+    {
+        return $this->meta;
+    }
+
+    /** @return array{success: bool, data: array, meta: array<string, mixed>} */
+    public function toArray(): array
+    {
+        return [
+            'success' => $this->success,
+            'data' => $this->data,
+            'meta' => $this->meta,
+        ];
+    }
+
+    public function jsonSerialize(): array
+    {
+        return $this->toArray();
+    }
+}

@@ -1,0 +1,190 @@
+<script>
+    import Layout from "@/Layouts/main.vue";
+    import { router, Head } from "@inertiajs/vue3";
+
+    import PageHeader from "@/Components/page-header.vue";
+    import DataTable from "@/Components/DataTable.vue";
+    import AccessDeniedCard from '@/Components/AccessDeniedCard.vue';
+
+    import { useAlert } from '@/Composables/useSweetAlert.js';
+    import { useFetchPetition } from '@/Composables/useFetchPetition.js';
+
+    const { showAlert, showConfirm } = useAlert();
+    const { fetchPetition } = useFetchPetition();
+
+    export default {
+        name: '%%plural%%Index',
+        components: {
+            Layout,
+            PageHeader,
+            DataTable,
+            AccessDeniedCard,
+            Head,
+        },
+        props: {
+            canViewModule: {
+                type: Boolean,
+                default: true,
+            },
+            message: {
+                type: String,
+                default: '',
+            },
+            permissions: {
+                type: Object,
+                default: () => ({ view: false, create: false, edit: false, delete: false }),
+            },
+            %%moduleCode%%: {
+                type: Object,
+                required: true,
+                default: () => ({ data: [], meta: { total: 0 } }),
+            },
+            title: {
+                type: String,
+                default: '%%visibleName%%',
+            },
+        },
+        data() {
+            return {
+                searchQuery: '',
+                isDeleting: false,
+                tableHeaders: [
+%%headers%%
+                ],
+            };
+        },
+        computed: {
+            filteredItems() {
+                const list = this.%%moduleCode%%.data || [];
+                const query = this.searchQuery.trim().toLowerCase();
+                if (!query) {
+                    return list;
+                }
+                return list.filter(item =>
+%%searchFilter%%
+                );
+            },
+        },
+        methods: {
+            async deleteItem(item) {
+                if (!item?.uuid || this.isDeleting) return;
+                const confirmed = await showConfirm(
+                    "warning",
+                    "¡Alerta!",
+                    "¿Está seguro que desea eliminar este registro?",
+                    "Sí, eliminar"
+                );
+                if (!confirmed) return;
+                this.isDeleting = true;
+                try {
+                    const response = await fetchPetition(route("%%moduleCode%%.destroy", item.uuid), {
+                        method: "DELETE",
+                    });
+                    if (response.ok) {
+                        showAlert("success", "Éxito", "Registro eliminado correctamente", 1500);
+                        router.visit(route('%%moduleCode%%.index'));
+                    } else {
+                        const data = response.data || {};
+                        const message = data.message ||
+                            (data.errors ? Object.values(data.errors).flat().join(" ") : "Error al eliminar el registro");
+                        showAlert("error", "Error", message, 3000);
+                    }
+                } catch (error) {
+                    showAlert("error", "Error inesperado", "Ocurrió un error al eliminar el registro", 2000);
+                } finally {
+                    this.isDeleting = false;
+                }
+            },
+        },
+        watch: {
+            searchQuery() {
+                this.currentPage = 1;
+            },
+        },
+    };
+</script>
+
+<template>
+    <Head :title="title" />
+    <Layout>
+        <PageHeader title="%%visibleName%%" pageTitle="Gestión" />
+        <div v-if="!canViewModule" class="row justify-content-center">
+            <div class="col-lg-6">
+                <AccessDeniedCard :message="message" />
+            </div>
+        </div>
+        <div v-else class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <div class="row g-4 align-items-center">
+                            <div class="col-sm">
+                                <h5 class="card-title mb-0">Listado</h5>
+                            </div>
+                            <div class="col-sm-auto">
+                                <div class="d-flex flex-wrap align-items-start gap-2" v-if="permissions.create">
+                                    <a :href="route('%%moduleCode%%.create')" class="btn btn-success add-btn">
+                                        <i class="ri-add-line align-bottom me-1"></i> Nuevo
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-xl-12 mb-3">
+                                <div class="search-box">
+                                    <input
+                                        v-model.trim="searchQuery"
+                                        type="text"
+                                        class="form-control"
+                                        placeholder="%%searchPlaceholder%%"
+                                    />
+                                    <i class="ri-search-line search-icon"></i>
+                                </div>
+                            </div>
+                            <DataTable
+                                id="table_%%moduleCode%%"
+                                :headers="tableHeaders"
+                                :items="filteredItems"
+                                :page-length="10"
+                                order-by="%%orderBy%%">
+%%codeColumn%%                                <template #cell-description="{ item }">
+                                    <span>{{ item.description || '' }}</span>
+                                </template>
+%%extraCells%%
+                                <template #cell-status="{ item }">
+                                    <span class="badge bg-success-subtle text-success" v-if="String(item.status) === '1'">
+                                        Activo
+                                    </span>
+                                    <span class="badge bg-danger-subtle text-danger" v-else>
+                                        Inactivo
+                                    </span>
+                                </template>
+                                <template #cell-actions="{ item }">
+                                    <ul class="list-inline hstack gap-2 mb-0">
+                                        <li class="list-inline-item" v-if="permissions.view">
+                                            <a :href="route('%%moduleCode%%.show', item.uuid)" class="text-primary" title="Ver">
+                                                <i class="ri-eye-fill fs-16"></i>
+                                            </a>
+                                        </li>
+                                        <li class="list-inline-item" v-if="permissions.edit">
+                                            <a :href="route('%%moduleCode%%.edit', item.uuid)" class="text-primary" title="Editar">
+                                                <i class="ri-pencil-fill fs-16"></i>
+                                            </a>
+                                        </li>
+                                        <li class="list-inline-item" v-if="permissions.delete">
+                                            <a @click="deleteItem(item)" class="text-danger" style="cursor: pointer" title="Eliminar">
+                                                <i class="ri-delete-bin-5-fill fs-16"></i>
+                                            </a>
+                                        </li>
+                                    </ul>
+                                </template>
+                            </DataTable>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </Layout>
+</template>

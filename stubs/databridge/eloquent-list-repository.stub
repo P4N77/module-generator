@@ -1,0 +1,125 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Infrastructure\Database\Repositories;
+
+use %%ns%%\%%plural%%\Domain\Repositories\%%listRepoInterface%%;
+use %%ns%%\%%plural%%\Infrastructure\Database\Models\%%modelName%%;
+use App\Shared\Infrastructure\Database\Repositories\BaseSearchRepository;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
+
+/**
+ * Lógica de listado AUTOCONTENIDA: filtros + paginación opcional + mapeo
+ * dinámico snake_case -> camelCase. Replica el lookup de DataBridge contra el
+ * modelo propio del módulo (%%modelName%%, tabla %%table%%).
+ */
+final class %%listRepoImpl%% implements %%listRepoInterface%%
+{
+    public function list(array $query): array
+    {
+        $page = isset($query['page']) ? (int) $query['page'] : null;
+        $perPage = isset($query['per_page']) ? (int) $query['per_page'] : null;
+        $matchAny = (bool) ($query['match_any'] ?? false);
+        $filters = array_diff_key($query, array_flip(['page', 'per_page', 'match_any']));
+
+        $builder = %%modelName%%::query();
+        BaseSearchRepository::applyPaginateColumnFilters(
+            $builder,
+            $filters,
+            $this->allowedColumns(),
+        );
+        // TODO: propagar $matchAny cuando BaseSearchRepository lo soporte (hoy sólo aplica AND).
+        unset($matchAny);
+
+        $builder->orderBy('created_at', 'desc');
+
+        // Sin page/per_page -> TODOS los registros, sin límite.
+        if ($page === null || $perPage === null) {
+            $rows = $builder->get();
+
+            return [
+                'success' => true,
+                'data' => $this->mapRows($rows),
+                'meta' => ['total' => $rows->count()],
+            ];
+        }
+
+        $total = (clone $builder)->count();
+        $perPage = max(1, $perPage);
+        $lastPage = (int) max(1, (int) ceil($total / $perPage));
+        $rows = $builder->forPage($page, $perPage)->get();
+
+        return [
+            'success' => true,
+            'data' => $this->mapRows($rows),
+            'meta' => [
+                'total' => $total,
+                'current_page' => $page,
+                'per_page' => $perPage,
+                'last_page' => $lastPage,
+            ],
+        ];
+    }
+
+    /** @return list<string> */
+    private function allowedColumns(): array
+    {
+        $model = new %%modelName%%();
+
+        return $model->getFillable() !== []
+            ? $model->getFillable()
+            : $model->getConnection()->getSchemaBuilder()->getColumnListing($model->getTable());
+    }
+
+    /**
+     * @param  Collection<int, Model>  $rows
+     * @return list<array<string, mixed>>
+     */
+    private function mapRows(Collection $rows): array
+    {
+        return $rows->map(fn (Model $row): array => array_merge(
+            $this->baseFields($row),
+            $this->extraFields($row),
+        ))->all();
+    }
+
+    /** @return array<string, mixed> */
+    private function baseFields(Model $row): array
+    {
+        $output = [];
+        foreach ($row->getAttributes() as $column => $value) {
+            $output[Str::camel($column)] = $this->normalizeValue($column, $value);
+        }
+
+        return $output;
+    }
+
+    /**
+     * Campos calculados propios del módulo (etiqueta lista para selects).
+     *
+     * @return array<string, mixed>
+     */
+    private function extraFields(Model $row): array
+    {
+%%extraFields%%
+    }
+
+    private function normalizeValue(string $column, mixed $value): mixed
+    {
+        if ($value === null) {
+            return null;
+        }
+        if (str_ends_with($column, '_at')) {
+            return Carbon::parse((string) $value)->toAtomString();
+        }
+        if (str_ends_with($column, '_date')) {
+            return Carbon::parse((string) $value)->format('Y-m-d');
+        }
+%%codeNormalize%%
+        return $value;
+    }
+}

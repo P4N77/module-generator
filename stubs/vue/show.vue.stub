@@ -1,0 +1,68 @@
+<script>
+    import Layout from "@/Layouts/main.vue";
+
+    import PageHeader from "@/Components/page-header.vue";
+
+    export default {
+        name: '%%plural%%Show',
+        components: {
+            Layout,
+            PageHeader,
+        },
+        props: {
+            %%singularCamel%%: {
+                type: Object,
+                required: true,
+            },
+        },
+        methods: {
+            getStatusText(status) {
+                const texts = { 1: 'Activo', 0: 'Inactivo' };
+                return texts[status] || 'Desconocido';
+            },
+            getStatusClass(status) {
+                const classes = {
+                    1: 'badge bg-success-subtle text-success',
+                    0: 'badge bg-danger-subtle text-danger',
+                };
+                return classes[status] || 'bg-secondary-subtle';
+            },
+        },
+    };
+</script>
+
+<template>
+    <Head title="Detalle %%visibleSingular%%" />
+    <Layout>
+        <PageHeader title="Detalle %%visibleSingular%%" pageTitle="%%visibleName%%" />
+        <div class="row">
+            <div class="col-lg-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">%%visibleSingular%%</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+%%codeBlock%%
+%%extraShowFields%%                            <div class="col-md-6 mb-1">
+                                <label class="form-label">Estado</label>
+                                <div>
+                                    <span class="badge" :class="getStatusClass(%%singularCamel%%.status)">
+                                        {{ getStatusText(%%singularCamel%%.status) }}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-12 text-end">
+                                <button type="button" class="btn btn-light me-2" @click="$inertia.visit(route('%%moduleCode%%.index'))">
+                                    Volver
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </Layout>
+</template>

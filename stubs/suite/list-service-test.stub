@@ -1,0 +1,34 @@
+<?php
+
+declare(strict_types=1);
+
+use %%ns%%\%%plural%%\Application\Services\%%listService%%;
+use %%ns%%\%%plural%%\Domain\Repositories\%%listRepoInterface%%;
+
+it('devuelve todos los registros cuando no se pagina', function () {
+    $repo = Mockery::mock(%%listRepoInterface%%::class);
+    $repo->shouldReceive('list')
+        ->once()
+        ->with(['%%filterKey%%' => '001', 'match_any' => false])
+        ->andReturn([
+            'success' => true,
+            'data' => [%%row%%],
+            'meta' => ['total' => 1],
+        ]);
+
+    $dto = (new %%listService%%($repo))->execute(['%%filterKey%%' => '001']);
+
+    expect($dto->isSuccess())->toBeTrue();
+    expect($dto->getData()[0]['%%extraKey%%'])->toBe('%%extraValue%%');
+    expect($dto->getMeta())->not->toHaveKey('current_page');
+});
+
+it('propaga matchAny al query del repositorio', function () {
+    $repo = Mockery::mock(%%listRepoInterface%%::class);
+    $repo->shouldReceive('list')
+        ->once()
+        ->with(%%secondFilter%%)
+        ->andReturn(['success' => true, 'data' => [], 'meta' => ['total' => 0]]);
+
+    (new %%listService%%($repo))->execute(%%secondExecute%%, true);
+});

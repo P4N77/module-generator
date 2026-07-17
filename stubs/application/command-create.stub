@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Commands;
+
+final class Create%%singular%%Command
+{
+    public function __construct(
+%%codeCreate%%        public ?string $description,
+%%extraCreate%%        public bool $status,
+        public string $createdBy,
+        public string $updatedBy,
+    ) {}
+}

@@ -1,0 +1,24 @@
+            normalizeCode(raw) {
+                return String(raw ?? '').replace(/[^A-Za-z0-9]/g, '');
+            },
+            onCodeInput() {
+                const normalized = this.normalizeCode(this.%%formVar%%.code);
+                if (normalized !== this.%%formVar%%.code) {
+                    this.%%formVar%%.code = normalized;
+                }
+            },
+            async validateCodeUniqueness() {
+                const code = this.normalizeCode(this.%%formVar%%.code);
+                if (code === '') return false;
+                const response = await fetchPetition(route('%%moduleCode%%.validateCode'), {
+                    method: 'POST',
+                    body: {
+                        code,
+                        uuid: %%uuidArg%%,
+                    },
+                });
+                if (!response.ok) return false;
+                const exists = Boolean(response.data?.exists);
+                this.codeExistsError = exists ? 'El código ya existe' : '';
+                return exists;
+            },

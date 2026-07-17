@@ -1,0 +1,34 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Application\Handlers;
+
+use %%ns%%\%%plural%%\Application\Commands\Update%%singular%%Command;
+use %%ns%%\%%plural%%\Application\DTOs\%%singular%%DTO;
+use %%ns%%\%%plural%%\Domain\Repositories\%%repoInterface%%;
+use %%ns%%\%%plural%%\Domain\Exceptions\%%singular%%NotFoundException;
+use %%ns%%\%%plural%%\Domain\ValueObjects\%%statusVo%%;
+
+final class Update%%singular%%Handler
+{
+    public function __construct(private %%repoInterface%% $repo) {}
+
+    public function handle(Update%%singular%%Command $c): %%singular%%DTO
+    {
+        $%%singularCamel%% = $this->repo->findByUuid($c->uuid);
+        if (! $%%singularCamel%%) {
+            throw %%singular%%NotFoundException::withUuid($c->uuid);
+        }
+
+        $%%singularCamel%%->update(
+%%codeUpdateAssign%%            description: $c->description,
+%%extraUpdateAssign%%            status: %%statusVo%%::from($c->status),
+            updatedBy: $c->actorId,
+        );
+
+        $this->repo->update($%%singularCamel%%);
+
+        return %%singular%%DTO::fromDomain($%%singularCamel%%);
+    }
+}

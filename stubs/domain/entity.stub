@@ -1,0 +1,66 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Domain\Entities;
+
+use %%ns%%\%%plural%%\Domain\ValueObjects\%%statusVo%%;
+use DateTimeImmutable;
+use Illuminate\Support\Str;
+
+final class %%singular%%
+{
+    public function __construct(
+        private ?int $id,
+        private string $uuid,
+%%codeCtorProp%%        private ?string $description,
+%%extraCtorProps%%        private %%statusVo%% $status,
+        private string $createdBy,
+        private string $updatedBy,
+        private DateTimeImmutable $createdAt,
+        private ?DateTimeImmutable $updatedAt,
+        private ?DateTimeImmutable $deletedAt = null,
+    ) {}
+
+    public static function create(
+        ?int $id,
+%%codeCreateParam%%        ?string $description,
+%%extraCreateParams%%        %%statusVo%% $status,
+        string $createdBy,
+        string $updatedBy,
+    ): self {
+        return new self(
+            id: $id,
+            uuid: (string) Str::ulid(),
+%%codeCreateAssign%%            description: $description,
+%%extraCreateAssigns%%            status: $status,
+            createdBy: $createdBy,
+            updatedBy: $updatedBy,
+            createdAt: new DateTimeImmutable(),
+            updatedAt: new DateTimeImmutable(),
+        );
+    }
+
+    public function update(%%codeUpdateParam%%?string $description, %%extraUpdateParams%%%%statusVo%% $status, string $updatedBy): void
+    {
+%%codeUpdateAssign%%        $this->description = $description;
+%%extraUpdateAssigns%%        $this->status = $status;
+        $this->updatedBy = $updatedBy;
+        $this->updatedAt = new DateTimeImmutable();
+    }
+
+    public function delete(): void
+    {
+        $this->deletedAt = new DateTimeImmutable();
+    }
+
+    public function id(): ?int { return $this->id; }
+    public function uuid(): string { return $this->uuid; }
+%%codeGetter%%    public function description(): ?string { return $this->description; }
+%%extraGetters%%    public function status(): %%statusVo%% { return $this->status; }
+    public function createdBy(): string { return $this->createdBy; }
+    public function updatedBy(): string { return $this->updatedBy; }
+    public function createdAt(): DateTimeImmutable { return $this->createdAt; }
+    public function updatedAt(): ?DateTimeImmutable { return $this->updatedAt; }
+    public function deletedAt(): ?DateTimeImmutable { return $this->deletedAt; }
+}

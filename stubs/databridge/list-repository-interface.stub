@@ -1,0 +1,18 @@
+<?php
+
+declare(strict_types=1);
+
+namespace %%ns%%\%%plural%%\Domain\Repositories;
+
+/**
+ * Contrato de listado de `%%table%%` al estilo DataBridge: un módulo = un
+ * listado, con filtros por columna, búsqueda global y paginación OPCIONAL.
+ */
+interface %%listRepoInterface%%
+{
+    /**
+     * @param  array<string, mixed>  $query  filtros + (opcional) page, per_page, match_any
+     * @return array{success: bool, data: list<array<string, mixed>>, meta: array<string, mixed>}
+     */
+    public function list(array $query): array;
+}
